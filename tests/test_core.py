@@ -49,3 +49,24 @@ def test_run_trajectory_calculation(sample_velocity_field):
 
     assert_allclose(trajectory['lat'], expected_lat)
     assert_allclose(trajectory['lon'], expected_lon)
+
+
+def test_run_trajectory_calculation_non_zero(sample_velocity_field):
+    """Test the trajectory calculation for a known case at non-zero lat/lon."""
+    start = {'lat': 40.0, 'lon': -120.0}
+    num_steps = 1
+    trajectory = run_trajectory(start, sample_velocity_field, num_steps)
+
+    # Get the expected velocity from the field itself to avoid floating point issues
+    u = sample_velocity_field['u'].sel(lat=40.0, lon=-120.0, method='nearest').item()
+    v = sample_velocity_field['v'].sel(lat=40.0, lon=-120.0, method='nearest').item()
+
+    expected_lat = xr.DataArray(
+        [start['lat'], start['lat'] + v], dims=['time'], coords={'time': [0, 1]}
+    )
+    expected_lon = xr.DataArray(
+        [start['lon'], start['lon'] + u], dims=['time'], coords={'time': [0, 1]}
+    )
+
+    assert_allclose(trajectory['lat'], expected_lat, rtol=1e-5)
+    assert_allclose(trajectory['lon'], expected_lon, rtol=1e-5)

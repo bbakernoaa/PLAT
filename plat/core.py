@@ -3,6 +3,7 @@
 
 from typing import Dict, Union
 
+import numpy as np
 import xarray as xr
 
 
@@ -61,30 +62,28 @@ def run_trajectory(
     Attributes:
         history:  'Trajectory simulation started from lat=40.0, lon=-120.0'
     """
-    # Initialize trajectory lists
-    trajectory_lat = [starting_point['lat']]
-    trajectory_lon = [starting_point['lon']]
+    # --- Optimized with NumPy pre-allocation ---
+    # Pre-allocate numpy arrays for performance
+    trajectory_lat = np.zeros(num_steps + 1)
+    trajectory_lon = np.zeros(num_steps + 1)
+
+    trajectory_lat[0] = starting_point['lat']
+    trajectory_lon[0] = starting_point['lon']
 
     # Simple forward Euler integration
-    for _ in range(num_steps):
-        current_lat = trajectory_lat[-1]
-        current_lon = trajectory_lon[-1]
-
+    for i in range(num_steps):
         # Interpolate velocity at the current position
         # Using nearest-neighbor for simplicity
         u = velocity_field['u'].interp(
-            lat=current_lat, lon=current_lon, method='nearest'
+            lat=trajectory_lat[i], lon=trajectory_lon[i], method='nearest'
         )
         v = velocity_field['v'].interp(
-            lat=current_lat, lon=current_lon, method='nearest'
+            lat=trajectory_lat[i], lon=trajectory_lon[i], method='nearest'
         )
 
         # Update position (assuming dt=1 and simple lat/lon update)
-        new_lat = current_lat + v.item()
-        new_lon = current_lon + u.item()
-
-        trajectory_lat.append(new_lat)
-        trajectory_lon.append(new_lon)
+        trajectory_lat[i + 1] = trajectory_lat[i] + v.values
+        trajectory_lon[i + 1] = trajectory_lon[i] + u.values
 
     # Create the output Dataset
     trajectory_ds = xr.Dataset(
