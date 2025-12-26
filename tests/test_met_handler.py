@@ -96,3 +96,22 @@ def test_metdataset_lazy_loading(sample_netcdf_file):
     met_data = MetDataset(sample_netcdf_file)
     # The data should be a Dask array, not a NumPy array in memory
     assert hasattr(met_data.ds['u'].data, 'dask')
+
+
+def test_subset_provenance(sample_netcdf_file):
+    """
+    Tests that the subset method adds a history attribute for provenance.
+    """
+    met_data = MetDataset(sample_netcdf_file)
+
+    # Define subset boundaries
+    time_range = ('2023-01-01T02:00', '2023-01-01T05:00')
+    lat_bounds = (35.0, 45.0)
+    lon_bounds = (-120.0, -110.0)
+
+    subset_ds = met_data.subset(time_range, lat_bounds, lon_bounds)
+
+    # Check for the 'history' attribute
+    assert 'history' in subset_ds.attrs
+    # Check that the history attribute contains the subsetting information
+    assert "Subsetted data" in subset_ds.attrs['history']
