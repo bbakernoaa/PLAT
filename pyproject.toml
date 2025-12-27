@@ -7,6 +7,7 @@ dependencies = [
     "xarray[complete]",
     "dask",
     "numpy",
+    "numba",
 ]
 
 [project.optional-dependencies]
