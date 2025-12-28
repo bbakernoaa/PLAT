@@ -78,6 +78,28 @@ class MetDataset:
                     break
         self.ds = self.ds.rename(rename_dict)
 
+    def _get_coord_names(self) -> Dict[str, str]:
+        """Detect standard coordinate names in the dataset.
+
+        Returns
+        -------
+        Dict[str, str]
+            A dictionary mapping generic names ('lat', 'lon') to the actual
+            coordinate names found in the dataset (e.g., 'latitude').
+        """
+        coord_names = {}
+        if 'latitude' in self.ds.coords:
+            coord_names['lat'] = 'latitude'
+        elif 'lat' in self.ds.coords:
+            coord_names['lat'] = 'lat'
+
+        if 'longitude' in self.ds.coords:
+            coord_names['lon'] = 'longitude'
+        elif 'lon' in self.ds.coords:
+            coord_names['lon'] = 'lon'
+
+        return coord_names
+
     def subset(
         self,
         time_range: Tuple[str, str],
@@ -109,13 +131,17 @@ class MetDataset:
             A new xarray Dataset view containing the sliced data.
 
         """
-        time_slice = slice(time_range[0], time_range[1])
-        lat_slice = slice(lat_bounds[0], lat_bounds[1])
-        lon_slice = slice(lon_bounds[0], lon_bounds[1])
+        coord_names = self._get_coord_names()
+        lat_name = coord_names.get('lat', 'latitude')
+        lon_name = coord_names.get('lon', 'longitude')
 
-        subset_ds = self.ds.sel(
-            time=time_slice, latitude=lat_slice, longitude=lon_slice
-        )
+        slicers = {
+            'time': slice(time_range[0], time_range[1]),
+            lat_name: slice(lat_bounds[0], lat_bounds[1]),
+            lon_name: slice(lon_bounds[0], lon_bounds[1]),
+        }
+
+        subset_ds = self.ds.sel(**slicers)
 
         # --- Scientific Hygiene: Update Attributes ---
         history_log = (
