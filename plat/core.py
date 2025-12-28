@@ -9,33 +9,73 @@ import xarray as xr
 
 
 @numba.jit(nopython=True)
-def _find_nearest_index(array, value):
+def _bilinear_interpolation_jit(
+    lat: float,
+    lon: float,
+    grid_lat: np.ndarray,
+    grid_lon: np.ndarray,
+    data: np.ndarray,
+) -> float:
     """
-    Find the index of the nearest value in a sorted array.
+    Perform bilinear interpolation on a 2D grid.
 
-    This utility function is designed to be used within a Numba JIT-compiled
-    environment. It uses binary search for efficiency.
+    This function is JIT-compiled with Numba for performance.
 
     Parameters
     ----------
-    array : np.ndarray
-        A 1D sorted array.
-    value : float
-        The value to find the nearest index for.
+    lat : float
+        Latitude of the interpolation point.
+    lon : float
+        Longitude of the interpolation point.
+    grid_lat : np.ndarray
+        A 1D array of latitude coordinates for the grid.
+    grid_lon : np.ndarray
+        A 1D array of longitude coordinates for the grid.
+    data : np.ndarray
+        A 2D array of data values corresponding to the grid.
 
     Returns
     -------
-    int
-        The index of the element in `array` that is closest to `value`.
+    float
+        The interpolated value at the given lat/lon point.
     """
-    idx = np.searchsorted(array, value, side="left")
-    if idx > 0 and (
-        idx == len(array)
-        or np.abs(value - array[idx - 1]) < np.abs(value - array[idx])
-    ):
-        return idx - 1
-    else:
-        return idx
+    # Find lower-bound indices for lat and lon
+    i = np.searchsorted(grid_lat, lat) - 1
+    j = np.searchsorted(grid_lon, lon) - 1
+
+    # Clamp indices to be within bounds
+    i = max(0, min(i, len(grid_lat) - 2))
+    j = max(0, min(j, len(grid_lon) - 2))
+
+    # Grid points surrounding the current location
+    lat1, lat2 = grid_lat[i], grid_lat[i + 1]
+    lon1, lon2 = grid_lon[j], grid_lon[j + 1]
+
+    # Data values at the grid corners
+    q11 = data[i, j]
+    q21 = data[i + 1, j]
+    q12 = data[i, j + 1]
+    q22 = data[i + 1, j + 1]
+
+    # Calculate interpolation weights
+    d_lat = lat2 - lat1
+    d_lon = lon2 - lon1
+
+    # Avoid division by zero if grid is singular
+    if d_lat == 0 or d_lon == 0:
+        return q11
+
+    w1 = (lat2 - lat) / d_lat
+    w2 = (lat - lat1) / d_lat
+    w3 = (lon2 - lon) / d_lon
+    w4 = (lon - lon1) / d_lon
+
+    # Perform the interpolation
+    f_lon1 = w1 * q11 + w2 * q21
+    f_lon2 = w1 * q12 + w2 * q22
+    interpolated_value = w3 * f_lon1 + w4 * f_lon2
+
+    return interpolated_value
 
 
 @numba.jit(nopython=True)
@@ -52,8 +92,8 @@ def _integrate_jit(
     Perform the core trajectory integration using a Numba JIT-compiled loop.
 
     This function is designed for performance-critical computation and operates
-    exclusively on NumPy arrays. It uses nearest-neighbor interpolation with an
-    efficient binary search (`np.searchsorted`) for grid lookup.
+    exclusively on NumPy arrays. It uses bilinear interpolation for improved
+    accuracy.
 
     Parameters
     ----------
@@ -79,13 +119,21 @@ def _integrate_jit(
     """
     # Simple forward Euler integration
     for i in range(num_steps):
-        # Find the index of the nearest grid point using binary search.
-        lat_idx = _find_nearest_index(grid_lat, trajectory_lat[i])
-        lon_idx = _find_nearest_index(grid_lon, trajectory_lon[i])
-
         # Get velocity values at that grid point
-        u = u_data[lat_idx, lon_idx]
-        v = v_data[lat_idx, lon_idx]
+        u = _bilinear_interpolation_jit(
+            trajectory_lat[i],
+            trajectory_lon[i],
+            grid_lat,
+            grid_lon,
+            u_data,
+        )
+        v = _bilinear_interpolation_jit(
+            trajectory_lat[i],
+            trajectory_lon[i],
+            grid_lat,
+            grid_lon,
+            v_data,
+        )
 
         # Update position (assuming dt=1 and simple lat/lon update)
         trajectory_lat[i + 1] = trajectory_lat[i] + v
