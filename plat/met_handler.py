@@ -5,7 +5,7 @@ This module provides the MetDataset class, which is responsible for ingesting,
  normalizing, and subsetting meteorological data from NetCDF or GRIB2 files.
 """
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import xarray as xr
 
@@ -80,24 +80,27 @@ class MetDataset:
 
     def _get_coord_names(self) -> Dict[str, str]:
         """Detect standard coordinate names in the dataset.
-
         Returns
         -------
         Dict[str, str]
-            A dictionary mapping generic names ('lat', 'lon') to the actual
-            coordinate names found in the dataset (e.g., 'latitude').
+            A dictionary mapping generic names ('lat', 'lon', 'level') to the
+            actual coordinate names found in the dataset.
         """
         coord_names = {}
+        # Horizontal coordinates
         if 'latitude' in self.ds.coords:
             coord_names['lat'] = 'latitude'
         elif 'lat' in self.ds.coords:
             coord_names['lat'] = 'lat'
-
         if 'longitude' in self.ds.coords:
             coord_names['lon'] = 'longitude'
         elif 'lon' in self.ds.coords:
             coord_names['lon'] = 'lon'
-
+        # Vertical coordinates
+        for z_name in ('level', 'pressure', 'isobaricInhPa', 'z'):
+            if z_name in self.ds.coords:
+                coord_names['level'] = z_name
+                break
         return coord_names
 
     def subset(
@@ -105,13 +108,13 @@ class MetDataset:
         time_range: Tuple[str, str],
         lat_bounds: Tuple[float, float],
         lon_bounds: Tuple[float, float],
+        level_bounds: Optional[Tuple[float, float]] = None,
     ) -> xr.Dataset:
         """Select a spatial and temporal subset of the data.
-
         This method uses xarray's `.sel()` to perform a selection based on
-        time, latitude, and longitude. The selection is lazy and returns a new
-        view of the original dataset without loading data into memory.
-
+        time, latitude, longitude, and an optional vertical level. The
+        selection is lazy and returns a new view of the original dataset
+        without loading data into memory.
         Parameters
         ----------
         time_range : Tuple[str, str]
@@ -124,12 +127,13 @@ class MetDataset:
         lon_bounds : Tuple[float, float]
             A tuple containing the minimum and maximum longitude bounds for the
             selection (e.g., (-125.0, -110.0)).
-
+        level_bounds : Optional[Tuple[float, float]], optional
+            A tuple containing the minimum and maximum vertical level bounds
+            for the selection (e.g., (1000.0, 500.0)), by default None.
         Returns
         -------
         xr.Dataset
             A new xarray Dataset view containing the sliced data.
-
         """
         coord_names = self._get_coord_names()
         lat_name = coord_names.get('lat', 'latitude')
@@ -141,14 +145,20 @@ class MetDataset:
             lon_name: slice(lon_bounds[0], lon_bounds[1]),
         }
 
-        subset_ds = self.ds.sel(**slicers)
-
-        # --- Scientific Hygiene: Update Attributes ---
         history_log = (
             f"Subsetted data to time_range={time_range}, "
             f"lat_bounds={lat_bounds}, lon_bounds={lon_bounds}"
         )
 
+        if level_bounds and 'level' in coord_names:
+            level_name = coord_names['level']
+            slicers[level_name] = slice(level_bounds[0], level_bounds[1])
+            history_log += f", level_bounds={level_bounds}"
+
+
+        subset_ds = self.ds.sel(**slicers)
+
+        # --- Scientific Hygiene: Update Attributes ---
         # Get existing history, if any
         existing_history = subset_ds.attrs.get('history')
 
@@ -157,5 +167,4 @@ class MetDataset:
             subset_ds.attrs['history'] = f"{existing_history}\n{history_log}"
         else:
             subset_ds.attrs['history'] = history_log
-
         return subset_ds

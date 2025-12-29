@@ -9,6 +9,97 @@ import xarray as xr
 
 
 @numba.jit(nopython=True)
+def _trilinear_interpolation_jit(
+    lat: float,
+    lon: float,
+    level: float,
+    grid_lat: np.ndarray,
+    grid_lon: np.ndarray,
+    grid_level: np.ndarray,
+    data: np.ndarray,
+) -> float:
+    """
+    Perform trilinear interpolation on a 3D grid.
+
+    This function is JIT-compiled with Numba for performance.
+
+    Parameters
+    ----------
+    lat : float
+        Latitude of the interpolation point.
+    lon : float
+        Longitude of the interpolation point.
+    level : float
+        Vertical level of the interpolation point.
+    grid_lat : np.ndarray
+        A 1D array of latitude coordinates for the grid.
+    grid_lon : np.ndarray
+        A 1D array of longitude coordinates for the grid.
+    grid_level : np.ndarray
+        A 1D array of vertical level coordinates for the grid.
+    data : np.ndarray
+        A 3D array of data values corresponding to the grid. The expected
+        dimension order is (level, lat, lon).
+
+    Returns
+    -------
+    float
+        The interpolated value at the given lat/lon/level point.
+    """
+    # Find lower-bound indices for lat, lon, and level
+    i = np.searchsorted(grid_lat, lat) - 1
+    j = np.searchsorted(grid_lon, lon) - 1
+    k = np.searchsorted(grid_level, level) - 1
+
+    # Clamp indices to be within bounds
+    i = max(0, min(i, len(grid_lat) - 2))
+    j = max(0, min(j, len(grid_lon) - 2))
+    k = max(0, min(k, len(grid_level) - 2))
+
+    # Grid points surrounding the current location
+    lat1, lat2 = grid_lat[i], grid_lat[i + 1]
+    lon1, lon2 = grid_lon[j], grid_lon[j + 1]
+    level1, level2 = grid_level[k], grid_level[k + 1]
+
+    # Data values at the 8 corners of the cube
+    q111 = data[k, i, j]
+    q112 = data[k, i, j + 1]
+    q121 = data[k, i + 1, j]
+    q122 = data[k, i + 1, j + 1]
+    q211 = data[k + 1, i, j]
+    q212 = data[k + 1, i, j + 1]
+    q221 = data[k + 1, i + 1, j]
+    q222 = data[k + 1, i + 1, j + 1]
+
+    # Calculate interpolation weights, avoiding division by zero
+    d_lat = lat2 - lat1 if (lat2 - lat1) != 0 else 1
+    d_lon = lon2 - lon1 if (lon2 - lon1) != 0 else 1
+    d_level = level2 - level1 if (level2 - level1) != 0 else 1
+
+    w_lat1 = (lat2 - lat) / d_lat
+    w_lat2 = (lat - lat1) / d_lat
+    w_lon1 = (lon2 - lon) / d_lon
+    w_lon2 = (lon - lon1) / d_lon
+    w_level1 = (level2 - level) / d_level
+    w_level2 = (level - level1) / d_level
+
+    # Interpolate along the longitude axis (x-axis)
+    c00 = w_lon1 * q111 + w_lon2 * q112
+    c01 = w_lon1 * q121 + w_lon2 * q122
+    c10 = w_lon1 * q211 + w_lon2 * q212
+    c11 = w_lon1 * q221 + w_lon2 * q222
+
+    # Interpolate along the latitude axis (y-axis)
+    c0 = w_lat1 * c00 + w_lat2 * c01
+    c1 = w_lat1 * c10 + w_lat2 * c11
+
+    # Interpolate along the level axis (z-axis)
+    interpolated_value = w_level1 * c0 + w_level2 * c1
+
+    return interpolated_value
+
+
+@numba.jit(nopython=True)
 def _bilinear_interpolation_jit(
     lat: float,
     lon: float,
@@ -82,14 +173,17 @@ def _bilinear_interpolation_jit(
 def _rk4_step_jit(
     lat: float,
     lon: float,
+    level: float,
     grid_lat: np.ndarray,
     grid_lon: np.ndarray,
+    grid_level: np.ndarray,
     u_data: np.ndarray,
     v_data: np.ndarray,
+    w_data: np.ndarray,
     dt: float,
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     """
-    Perform a single Runge-Kutta 4th order (RK4) integration step.
+    Perform a single Runge-Kutta 4th order (RK4) integration step in 3D.
 
     This function is JIT-compiled with Numba for performance.
 
@@ -99,65 +193,83 @@ def _rk4_step_jit(
         The current latitude of the particle.
     lon : float
         The current longitude of the particle.
+    level : float
+        The current vertical level of the particle.
     grid_lat : np.ndarray
         The latitude coordinates of the velocity field grid.
     grid_lon : np.ndarray
         The longitude coordinates of the velocity field grid.
+    grid_level : np.ndarray
+        The vertical level coordinates of the velocity field grid.
     u_data : np.ndarray
-        A 2D array of the 'u' velocity component.
+        A 3D array of the 'u' velocity component.
     v_data : np.ndarray
-        A 2D array of the 'v' velocity component.
+        A 3D array of the 'v' velocity component.
+    w_data : np.ndarray
+        A 3D array of the 'w' velocity component.
     dt : float
         The time step for the integration.
 
     Returns
     -------
-    tuple[float, float]
-        A tuple containing the new latitude and longitude.
+    tuple[float, float, float]
+        A tuple containing the new latitude, longitude, and level.
     """
     # --- RK4 k1 ---
-    u1 = _bilinear_interpolation_jit(lat, lon, grid_lat, grid_lon, u_data)
-    v1 = _bilinear_interpolation_jit(lat, lon, grid_lat, grid_lon, v_data)
+    u1 = _trilinear_interpolation_jit(lat, lon, level, grid_lat, grid_lon, grid_level, u_data)
+    v1 = _trilinear_interpolation_jit(lat, lon, level, grid_lat, grid_lon, grid_level, v_data)
+    w1 = _trilinear_interpolation_jit(lat, lon, level, grid_lat, grid_lon, grid_level, w_data)
 
     # --- RK4 k2 ---
     lat2 = lat + v1 * dt / 2
     lon2 = lon + u1 * dt / 2
-    u2 = _bilinear_interpolation_jit(lat2, lon2, grid_lat, grid_lon, u_data)
-    v2 = _bilinear_interpolation_jit(lat2, lon2, grid_lat, grid_lon, v_data)
+    level2 = level + w1 * dt / 2
+    u2 = _trilinear_interpolation_jit(lat2, lon2, level2, grid_lat, grid_lon, grid_level, u_data)
+    v2 = _trilinear_interpolation_jit(lat2, lon2, level2, grid_lat, grid_lon, grid_level, v_data)
+    w2 = _trilinear_interpolation_jit(lat2, lon2, level2, grid_lat, grid_lon, grid_level, w_data)
 
     # --- RK4 k3 ---
     lat3 = lat + v2 * dt / 2
     lon3 = lon + u2 * dt / 2
-    u3 = _bilinear_interpolation_jit(lat3, lon3, grid_lat, grid_lon, u_data)
-    v3 = _bilinear_interpolation_jit(lat3, lon3, grid_lat, grid_lon, v_data)
+    level3 = level + w2 * dt / 2
+    u3 = _trilinear_interpolation_jit(lat3, lon3, level3, grid_lat, grid_lon, grid_level, u_data)
+    v3 = _trilinear_interpolation_jit(lat3, lon3, level3, grid_lat, grid_lon, grid_level, v_data)
+    w3 = _trilinear_interpolation_jit(lat3, lon3, level3, grid_lat, grid_lon, grid_level, w_data)
 
     # --- RK4 k4 ---
     lat4 = lat + v3 * dt
     lon4 = lon + u3 * dt
-    u4 = _bilinear_interpolation_jit(lat4, lon4, grid_lat, grid_lon, u_data)
-    v4 = _bilinear_interpolation_jit(lat4, lon4, grid_lat, grid_lon, v_data)
+    level4 = level + w3 * dt
+    u4 = _trilinear_interpolation_jit(lat4, lon4, level4, grid_lat, grid_lon, grid_level, u_data)
+    v4 = _trilinear_interpolation_jit(lat4, lon4, level4, grid_lat, grid_lon, grid_level, v_data)
+    w4 = _trilinear_interpolation_jit(lat4, lon4, level4, grid_lat, grid_lon, grid_level, w_data)
 
     # --- Final velocity and position update ---
     u_final = (u1 + 2 * u2 + 2 * u3 + u4) / 6
     v_final = (v1 + 2 * v2 + 2 * v3 + v4) / 6
+    w_final = (w1 + 2 * w2 + 2 * w3 + w4) / 6
 
     new_lat = lat + v_final * dt
     new_lon = lon + u_final * dt
+    new_level = level + w_final * dt
 
-    return new_lat, new_lon
+    return new_lat, new_lon, new_level
 
 
 @numba.jit(nopython=True)
 def _integrate_jit(
     trajectory_lat: np.ndarray,
     trajectory_lon: np.ndarray,
+    trajectory_level: np.ndarray,
     grid_lat: np.ndarray,
     grid_lon: np.ndarray,
+    grid_level: np.ndarray,
     u_data: np.ndarray,
     v_data: np.ndarray,
+    w_data: np.ndarray,
     num_steps: int,
     dt: float,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Perform the core trajectory integration using a Numba JIT-compiled loop.
 
@@ -171,14 +283,20 @@ def _integrate_jit(
         A 1D array to be filled with the latitude of the particle at each step.
     trajectory_lon : np.ndarray
         A 1D array to be filled with the longitude of the particle at each step.
+    trajectory_level : np.ndarray
+        A 1D array to be filled with the vertical level of the particle.
     grid_lat : np.ndarray
         The latitude coordinates of the velocity field grid.
     grid_lon : np.ndarray
         The longitude coordinates of the velocity field grid.
+    grid_level : np.ndarray
+        The vertical level coordinates of the velocity field grid.
     u_data : np.ndarray
-        A 2D array of the 'u' velocity component.
+        A 3D array of the 'u' velocity component.
     v_data : np.ndarray
-        A 2D array of the 'v' velocity component.
+        A 3D array of the 'v' velocity component.
+    w_data : np.ndarray
+        A 3D array of the 'w' velocity component.
     num_steps : int
         The number of integration steps to perform.
     dt : float
@@ -186,23 +304,27 @@ def _integrate_jit(
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
-        A tuple containing the populated trajectory_lat and trajectory_lon arrays.
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        A tuple containing the populated trajectory arrays for lat, lon, and level.
     """
     for i in range(num_steps):
-        new_lat, new_lon = _rk4_step_jit(
+        new_lat, new_lon, new_level = _rk4_step_jit(
             trajectory_lat[i],
             trajectory_lon[i],
+            trajectory_level[i],
             grid_lat,
             grid_lon,
+            grid_level,
             u_data,
             v_data,
+            w_data,
             dt,
         )
         trajectory_lat[i + 1] = new_lat
         trajectory_lon[i + 1] = new_lon
+        trajectory_level[i + 1] = new_level
 
-    return trajectory_lat, trajectory_lon
+    return trajectory_lat, trajectory_lon, trajectory_level
 
 
 def run_trajectory(
@@ -212,7 +334,7 @@ def run_trajectory(
     dt: float = 1.0,
 ) -> xr.Dataset:
     """
-    Simulate a single-particle trajectory through a 2D velocity field.
+    Simulate a single-particle trajectory through a 3D velocity field.
 
     This function integrates the particle's position using the Runge-Kutta 4th
     order (RK4) method. The velocity field is assumed to be steady-state.
@@ -222,10 +344,10 @@ def run_trajectory(
     ----------
     starting_point : Dict[str, Union[float, int]]
         A dictionary defining the initial position of the particle.
-        Must contain 'lat' and 'lon' keys with numeric values.
+        Must contain 'lat', 'lon', and 'level' keys with numeric values.
     velocity_field : xr.Dataset
-        An xarray Dataset containing the velocity components 'u' and 'v'.
-        The dataset must have 'lat' and 'lon' as coordinates.
+        An xarray Dataset containing the velocity components 'u', 'v', and 'w'.
+        The dataset must have 'lat', 'lon', and 'level' as coordinates.
     num_steps : int
         The number of integration steps to perform.
     dt : float, optional
@@ -235,7 +357,8 @@ def run_trajectory(
     -------
     xr.Dataset
         A new xarray Dataset containing the trajectory of the particle.
-        The dataset will have a 'time' coordinate and variables 'lat' and 'lon'.
+        The dataset will have a 'time' coordinate and variables 'lat', 'lon',
+        and 'level'.
 
     Examples
     --------
@@ -268,25 +391,32 @@ def run_trajectory(
     # Pre-allocate numpy arrays for performance
     trajectory_lat = np.zeros(num_steps + 1, dtype=np.float64)
     trajectory_lon = np.zeros(num_steps + 1, dtype=np.float64)
+    trajectory_level = np.zeros(num_steps + 1, dtype=np.float64)
 
     trajectory_lat[0] = starting_point['lat']
     trajectory_lon[0] = starting_point['lon']
+    trajectory_level[0] = starting_point['level']
 
     # Extract NumPy arrays from the velocity field for the JIT function.
     # Numba cannot handle xarray objects directly.
     grid_lat = velocity_field['lat'].values
     grid_lon = velocity_field['lon'].values
+    grid_level = velocity_field['level'].values
     u_data = velocity_field['u'].values
     v_data = velocity_field['v'].values
+    w_data = velocity_field['w'].values
 
     # --- Run the JIT-compiled integration ---
-    trajectory_lat, trajectory_lon = _integrate_jit(
+    trajectory_lat, trajectory_lon, trajectory_level = _integrate_jit(
         trajectory_lat,
         trajectory_lon,
+        trajectory_level,
         grid_lat,
         grid_lon,
+        grid_level,
         u_data,
         v_data,
+        w_data,
         num_steps,
         dt,
     )
@@ -296,13 +426,14 @@ def run_trajectory(
         {
             'lat': (('time',), trajectory_lat),
             'lon': (('time',), trajectory_lon),
+            'level': (('time',), trajectory_level),
         },
         coords={'time': range(num_steps + 1)},
     )
 
     # --- Scientific Hygiene: Update Attributes ---
     history_log = (
-        f"Particle trajectory calculated using RK4 integration with "
+        f"3D particle trajectory calculated using RK4 integration with "
         f"{num_steps} steps and dt={dt}."
     )
     trajectory_ds.attrs['history'] = history_log

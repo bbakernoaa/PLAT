@@ -9,27 +9,39 @@ from plat.core import run_trajectory
 
 @pytest.fixture
 def zero_velocity_field() -> xr.Dataset:
-    """Create a velocity field with zero velocity everywhere."""
+    """Create a 3D velocity field with zero velocity everywhere."""
     lat = np.arange(-90, 91, 10)
     lon = np.arange(-180, 181, 20)
-    u = np.zeros((len(lat), len(lon)))
-    v = np.zeros((len(lat), len(lon)))
+    level = np.array([1000, 850, 500])
+    u = np.zeros((len(level), len(lat), len(lon)))
+    v = np.zeros((len(level), len(lat), len(lon)))
+    w = np.zeros((len(level), len(lat), len(lon)))
     return xr.Dataset(
-        {'u': (('lat', 'lon'), u), 'v': (('lat', 'lon'), v)},
-        coords={'lat': lat, 'lon': lon},
+        {
+            'u': (('level', 'lat', 'lon'), u),
+            'v': (('level', 'lat', 'lon'), v),
+            'w': (('level', 'lat', 'lon'), w),
+        },
+        coords={'level': level, 'lat': lat, 'lon': lon},
     )
 
 
 @pytest.fixture
 def constant_velocity_field() -> xr.Dataset:
-    """Create a velocity field with constant velocity everywhere."""
+    """Create a 3D velocity field with constant velocity everywhere."""
     lat = np.arange(-90, 91, 10)
     lon = np.arange(-180, 181, 20)
-    u = np.ones((len(lat), len(lon)))
-    v = np.ones((len(lat), len(lon)))
+    level = np.array([1000, 850, 500])
+    u = np.ones((len(level), len(lat), len(lon)))
+    v = np.ones((len(level), len(lat), len(lon)))
+    w = np.zeros((len(level), len(lat), len(lon)))  # No vertical motion
     return xr.Dataset(
-        {'u': (('lat', 'lon'), u), 'v': (('lat', 'lon'), v)},
-        coords={'lat': lat, 'lon': lon},
+        {
+            'u': (('level', 'lat', 'lon'), u),
+            'v': (('level', 'lat', 'lon'), v),
+            'w': (('level', 'lat', 'lon'), w),
+        },
+        coords={'level': level, 'lat': lat, 'lon': lon},
     )
 
 
@@ -37,78 +49,88 @@ def test_run_trajectory_stationary_particle(zero_velocity_field):
     """
     Test that a particle in a zero-velocity field remains stationary.
     """
-    start = {'lat': 40.0, 'lon': -120.0}
+    start = {'lat': 40.0, 'lon': -120.0, 'level': 850.0}
     num_steps = 10
     trajectory = run_trajectory(start, zero_velocity_field, num_steps)
 
     # --- Check that the particle has not moved ---
     assert np.all(trajectory['lat'].values == start['lat'])
     assert np.all(trajectory['lon'].values == start['lon'])
+    assert np.all(trajectory['level'].values == start['level'])
 
 
 def test_run_trajectory_constant_velocity(constant_velocity_field):
     """
     Test that a particle in a constant-velocity field moves as expected.
     """
-    start = {'lat': 40.0, 'lon': -120.0}
+    start = {'lat': 40.0, 'lon': -120.0, 'level': 850.0}
     num_steps = 10
     trajectory = run_trajectory(start, constant_velocity_field, num_steps)
 
     # --- Check that the particle has moved the correct distance ---
-    # The expected position is the starting position plus the velocity
-    # multiplied by the number of steps.
     expected_lat = start['lat'] + num_steps
     expected_lon = start['lon'] + num_steps
 
     assert trajectory['lat'].values[-1] == expected_lat
     assert trajectory['lon'].values[-1] == expected_lon
+    assert trajectory['level'].values[-1] == start['level']
 
 
 @pytest.fixture
-def gradient_velocity_field() -> xr.Dataset:
-    """Create a velocity field with a linear gradient."""
+def gradient_velocity_field_3d() -> xr.Dataset:
+    """Create a 3D velocity field with a linear gradient."""
     lat = np.array([30, 40])
     lon = np.array([-120, -110])
-    # v increases with latitude, u increases with longitude
-    v = np.array([[1, 1], [2, 2]])  # v=1 at lat=30, v=2 at lat=40
-    u = np.array([[1, 2], [1, 2]])  # u=1 at lon=-120, u=2 at lon=-110
+    level = np.array([800, 700])
+    # u increases with longitude, v with latitude, w with level
+    u_2d = np.array([[1, 2], [1, 2]])
+    v_2d = np.array([[1, 1], [2, 2]])
+    w_2d = np.array([[-10, -10], [-10, -10]])  # w=-10 at level=800
+
+    u = np.stack([u_2d, u_2d])
+    v = np.stack([v_2d, v_2d])
+    w = np.stack([w_2d, w_2d * 2])  # w=-20 at level=700
+
     return xr.Dataset(
-        {'u': (('lat', 'lon'), u), 'v': (('lat', 'lon'), v)},
-        coords={'lat': lat, 'lon': lon},
+        {
+            'u': (('level', 'lat', 'lon'), u),
+            'v': (('level', 'lat', 'lon'), v),
+            'w': (('level', 'lat', 'lon'), w),
+        },
+        coords={'level': level, 'lat': lat, 'lon': lon},
     )
 
 
-def test_run_trajectory_bilinear_interpolation(gradient_velocity_field):
+def test_run_trajectory_trilinear_interpolation(gradient_velocity_field_3d):
     """
-    Test that the trajectory integration correctly uses bilinear interpolation.
+    Test that the trajectory integration correctly uses trilinear interpolation.
     """
     # Start the particle exactly halfway between grid points.
-    start = {'lat': 35.0, 'lon': -115.0}
+    start = {'lat': 35.0, 'lon': -115.0, 'level': 750.0}
     num_steps = 1
-    trajectory = run_trajectory(start, gradient_velocity_field, num_steps)
+    trajectory = run_trajectory(start, gradient_velocity_field_3d, num_steps)
 
-    # --- Manually calculate the expected interpolated velocity ---
-    # With the RK4 integration, the final position will be slightly different
-    # than a simple single-step Euler integration.
-    # The expected values below are calculated from a manual RK4 calculation.
+    # The expected values are from a manual calculation of a single RK4 step
+    # with the given gradient field.
     expected_lat = 36.5775625
     expected_lon = -113.4224375
-
+    expected_level = 734.224375
 
     # --- Check that the particle has moved to the interpolated position ---
     assert np.isclose(trajectory['lat'].values[-1], expected_lat)
     assert np.isclose(trajectory['lon'].values[-1], expected_lon)
+    assert np.isclose(trajectory['level'].values[-1], expected_level)
 
 
 @pytest.fixture
 def solid_body_rotation_field() -> xr.Dataset:
     """
-    Create a velocity field corresponding to solid body rotation.
-
-    The center of rotation is at lat=40, lon=-100.
+    Create a 3D velocity field corresponding to solid body rotation.
+    The vertical velocity is zero.
     """
     lat = np.arange(30, 51, 1)
     lon = np.arange(-110, -89, 1)
+    level = np.array([1000, 850, 500])
     lon_grid, lat_grid = np.meshgrid(lon, lat)
 
     # Center of rotation
@@ -116,12 +138,21 @@ def solid_body_rotation_field() -> xr.Dataset:
     omega = 0.5  # Angular velocity
 
     # Velocities in a small-angle approximation
-    u = -omega * (lat_grid - lat_center)
-    v = omega * (lon_grid - lon_center)
+    u_2d = -omega * (lat_grid - lat_center)
+    v_2d = omega * (lon_grid - lon_center)
+
+    # Add a level dimension
+    u = np.stack([u_2d] * len(level))
+    v = np.stack([v_2d] * len(level))
+    w = np.zeros_like(u)
 
     return xr.Dataset(
-        {'u': (('lat', 'lon'), u), 'v': (('lat', 'lon'), v)},
-        coords={'lat': lat, 'lon': lon},
+        {
+            'u': (('level', 'lat', 'lon'), u),
+            'v': (('level', 'lat', 'lon'), v),
+            'w': (('level', 'lat', 'lon'), w),
+        },
+        coords={'level': level, 'lat': lat, 'lon': lon},
     )
 
 
@@ -130,9 +161,9 @@ def test_run_trajectory_solid_body_rotation(solid_body_rotation_field):
     Test trajectory in a solid-body rotation field.
 
     A particle in this field should maintain a constant distance from the
-    center of rotation. This is a strong test of the RK4 integrator's accuracy.
+    center of rotation and a constant vertical level.
     """
-    start = {'lat': 45.0, 'lon': -100.0}  # Start north of the center
+    start = {'lat': 45.0, 'lon': -100.0, 'level': 850.0}
     num_steps = 25
     dt = 0.1  # Use a smaller time step for better accuracy
 
@@ -153,3 +184,45 @@ def test_run_trajectory_solid_body_rotation(solid_body_rotation_field):
 
     # The radius should be nearly constant (within a small tolerance)
     assert np.isclose(radius_initial, radius_final, rtol=1e-3)
+    # The level should be constant
+    assert np.all(trajectory['level'].values == start['level'])
+
+
+@pytest.fixture
+def constant_vertical_velocity_field() -> xr.Dataset:
+    """Create a 3D velocity field with constant vertical velocity."""
+    lat = np.arange(30, 41, 1)
+    lon = np.arange(-110, -99, 1)
+    level = np.arange(1000, 400, -100)
+    u = np.zeros((len(level), len(lat), len(lon)))
+    v = np.zeros((len(level), len(lat), len(lon)))
+    w = np.full((len(level), len(lat), len(lon)), -50.0)  # Constant decent
+    return xr.Dataset(
+        {
+            'u': (('level', 'lat', 'lon'), u),
+            'v': (('level', 'lat', 'lon'), v),
+            'w': (('level', 'lat', 'lon'), w),
+        },
+        coords={'level': level, 'lat': lat, 'lon': lon},
+    )
+
+
+def test_run_trajectory_3d_vertical_motion(constant_vertical_velocity_field):
+    """
+    Test a 3D trajectory with only vertical motion.
+    """
+    start = {'lat': 35.0, 'lon': -105.0, 'level': 850.0}
+    num_steps = 5
+    dt = 1.0  # 1 hour time step
+
+    trajectory = run_trajectory(
+        start, constant_vertical_velocity_field, num_steps, dt=dt
+    )
+
+    # --- Check that the particle has moved vertically ---
+    expected_level = start['level'] + (-50.0 * num_steps)
+    assert np.isclose(trajectory['level'].values[-1], expected_level)
+
+    # --- Check that the particle has not moved horizontally ---
+    assert np.all(trajectory['lat'].values == start['lat'])
+    assert np.all(trajectory['lon'].values == start['lon'])
