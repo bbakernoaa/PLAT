@@ -88,15 +88,68 @@ def test_run_trajectory_bilinear_interpolation(gradient_velocity_field):
     trajectory = run_trajectory(start, gradient_velocity_field, num_steps)
 
     # --- Manually calculate the expected interpolated velocity ---
-    # At lat=35 (halfway between 30 and 40), v should be 1.5.
-    # At lon=-115 (halfway between -120 and -110), u should be 1.5.
-    expected_v = 1.5
-    expected_u = 1.5
+    # With the RK4 integration, the final position will be slightly different
+    # than a simple single-step Euler integration.
+    # The expected values below are calculated from a manual RK4 calculation.
+    expected_lat = 36.5775625
+    expected_lon = -113.4224375
 
-    # The new position after one step (dt=1) should be start + velocity.
-    expected_lat = start['lat'] + expected_v
-    expected_lon = start['lon'] + expected_u
 
     # --- Check that the particle has moved to the interpolated position ---
     assert np.isclose(trajectory['lat'].values[-1], expected_lat)
     assert np.isclose(trajectory['lon'].values[-1], expected_lon)
+
+
+@pytest.fixture
+def solid_body_rotation_field() -> xr.Dataset:
+    """
+    Create a velocity field corresponding to solid body rotation.
+
+    The center of rotation is at lat=40, lon=-100.
+    """
+    lat = np.arange(30, 51, 1)
+    lon = np.arange(-110, -89, 1)
+    lon_grid, lat_grid = np.meshgrid(lon, lat)
+
+    # Center of rotation
+    lat_center, lon_center = 40, -100
+    omega = 0.5  # Angular velocity
+
+    # Velocities in a small-angle approximation
+    u = -omega * (lat_grid - lat_center)
+    v = omega * (lon_grid - lon_center)
+
+    return xr.Dataset(
+        {'u': (('lat', 'lon'), u), 'v': (('lat', 'lon'), v)},
+        coords={'lat': lat, 'lon': lon},
+    )
+
+
+def test_run_trajectory_solid_body_rotation(solid_body_rotation_field):
+    """
+    Test trajectory in a solid-body rotation field.
+
+    A particle in this field should maintain a constant distance from the
+    center of rotation. This is a strong test of the RK4 integrator's accuracy.
+    """
+    start = {'lat': 45.0, 'lon': -100.0}  # Start north of the center
+    num_steps = 25
+    dt = 0.1  # Use a smaller time step for better accuracy
+
+    trajectory = run_trajectory(
+        start, solid_body_rotation_field, num_steps, dt=dt
+    )
+
+    # --- Check that the particle maintains a constant radius from the center ---
+    lat_center, lon_center = 40, -100
+    radius_initial = np.sqrt(
+        (trajectory['lat'].values[0] - lat_center) ** 2
+        + (trajectory['lon'].values[0] - lon_center) ** 2
+    )
+    radius_final = np.sqrt(
+        (trajectory['lat'].values[-1] - lat_center) ** 2
+        + (trajectory['lon'].values[-1] - lon_center) ** 2
+    )
+
+    # The radius should be nearly constant (within a small tolerance)
+    assert np.isclose(radius_initial, radius_final, rtol=1e-3)

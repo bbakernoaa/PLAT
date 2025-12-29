@@ -79,6 +79,75 @@ def _bilinear_interpolation_jit(
 
 
 @numba.jit(nopython=True)
+def _rk4_step_jit(
+    lat: float,
+    lon: float,
+    grid_lat: np.ndarray,
+    grid_lon: np.ndarray,
+    u_data: np.ndarray,
+    v_data: np.ndarray,
+    dt: float,
+) -> tuple[float, float]:
+    """
+    Perform a single Runge-Kutta 4th order (RK4) integration step.
+
+    This function is JIT-compiled with Numba for performance.
+
+    Parameters
+    ----------
+    lat : float
+        The current latitude of the particle.
+    lon : float
+        The current longitude of the particle.
+    grid_lat : np.ndarray
+        The latitude coordinates of the velocity field grid.
+    grid_lon : np.ndarray
+        The longitude coordinates of the velocity field grid.
+    u_data : np.ndarray
+        A 2D array of the 'u' velocity component.
+    v_data : np.ndarray
+        A 2D array of the 'v' velocity component.
+    dt : float
+        The time step for the integration.
+
+    Returns
+    -------
+    tuple[float, float]
+        A tuple containing the new latitude and longitude.
+    """
+    # --- RK4 k1 ---
+    u1 = _bilinear_interpolation_jit(lat, lon, grid_lat, grid_lon, u_data)
+    v1 = _bilinear_interpolation_jit(lat, lon, grid_lat, grid_lon, v_data)
+
+    # --- RK4 k2 ---
+    lat2 = lat + v1 * dt / 2
+    lon2 = lon + u1 * dt / 2
+    u2 = _bilinear_interpolation_jit(lat2, lon2, grid_lat, grid_lon, u_data)
+    v2 = _bilinear_interpolation_jit(lat2, lon2, grid_lat, grid_lon, v_data)
+
+    # --- RK4 k3 ---
+    lat3 = lat + v2 * dt / 2
+    lon3 = lon + u2 * dt / 2
+    u3 = _bilinear_interpolation_jit(lat3, lon3, grid_lat, grid_lon, u_data)
+    v3 = _bilinear_interpolation_jit(lat3, lon3, grid_lat, grid_lon, v_data)
+
+    # --- RK4 k4 ---
+    lat4 = lat + v3 * dt
+    lon4 = lon + u3 * dt
+    u4 = _bilinear_interpolation_jit(lat4, lon4, grid_lat, grid_lon, u_data)
+    v4 = _bilinear_interpolation_jit(lat4, lon4, grid_lat, grid_lon, v_data)
+
+    # --- Final velocity and position update ---
+    u_final = (u1 + 2 * u2 + 2 * u3 + u4) / 6
+    v_final = (v1 + 2 * v2 + 2 * v3 + v4) / 6
+
+    new_lat = lat + v_final * dt
+    new_lon = lon + u_final * dt
+
+    return new_lat, new_lon
+
+
+@numba.jit(nopython=True)
 def _integrate_jit(
     trajectory_lat: np.ndarray,
     trajectory_lon: np.ndarray,
@@ -87,13 +156,14 @@ def _integrate_jit(
     u_data: np.ndarray,
     v_data: np.ndarray,
     num_steps: int,
+    dt: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Perform the core trajectory integration using a Numba JIT-compiled loop.
 
     This function is designed for performance-critical computation and operates
-    exclusively on NumPy arrays. It uses bilinear interpolation for improved
-    accuracy.
+    exclusively on NumPy arrays. It uses the Runge-Kutta 4th order (RK4)
+    method for improved physical accuracy.
 
     Parameters
     ----------
@@ -111,33 +181,26 @@ def _integrate_jit(
         A 2D array of the 'v' velocity component.
     num_steps : int
         The number of integration steps to perform.
+    dt : float
+        The time step for the integration.
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         A tuple containing the populated trajectory_lat and trajectory_lon arrays.
     """
-    # Simple forward Euler integration
     for i in range(num_steps):
-        # Get velocity values at that grid point
-        u = _bilinear_interpolation_jit(
+        new_lat, new_lon = _rk4_step_jit(
             trajectory_lat[i],
             trajectory_lon[i],
             grid_lat,
             grid_lon,
             u_data,
-        )
-        v = _bilinear_interpolation_jit(
-            trajectory_lat[i],
-            trajectory_lon[i],
-            grid_lat,
-            grid_lon,
             v_data,
+            dt,
         )
-
-        # Update position (assuming dt=1 and simple lat/lon update)
-        trajectory_lat[i + 1] = trajectory_lat[i] + v
-        trajectory_lon[i + 1] = trajectory_lon[i] + u
+        trajectory_lat[i + 1] = new_lat
+        trajectory_lon[i + 1] = new_lon
 
     return trajectory_lat, trajectory_lon
 
@@ -146,13 +209,14 @@ def run_trajectory(
     starting_point: Dict[str, Union[float, int]],
     velocity_field: xr.Dataset,
     num_steps: int,
+    dt: float = 1.0,
 ) -> xr.Dataset:
     """
     Simulate a single-particle trajectory through a 2D velocity field.
 
-    This function integrates the particle's position using a forward Euler
-    method. The velocity field is assumed to be steady-state. The core
-    integration loop is JIT-compiled with Numba for performance.
+    This function integrates the particle's position using the Runge-Kutta 4th
+    order (RK4) method. The velocity field is assumed to be steady-state.
+    The core integration loop is JIT-compiled with Numba for performance.
 
     Parameters
     ----------
@@ -164,6 +228,8 @@ def run_trajectory(
         The dataset must have 'lat' and 'lon' as coordinates.
     num_steps : int
         The number of integration steps to perform.
+    dt : float, optional
+        The time step for the integration in hours (default is 1.0).
 
     Returns
     -------
@@ -222,6 +288,7 @@ def run_trajectory(
         u_data,
         v_data,
         num_steps,
+        dt,
     )
 
     # --- Package the results into an xarray Dataset ---
@@ -235,8 +302,8 @@ def run_trajectory(
 
     # --- Scientific Hygiene: Update Attributes ---
     history_log = (
-        f"Trajectory simulation started from "
-        f"lat={starting_point['lat']}, lon={starting_point['lon']}"
+        f"Particle trajectory calculated using RK4 integration with "
+        f"{num_steps} steps and dt={dt}."
     )
     trajectory_ds.attrs['history'] = history_log
 
