@@ -49,7 +49,7 @@ def test_run_trajectory_stationary_particle(zero_velocity_field):
     """
     Test that a particle in a zero-velocity field remains stationary.
     """
-    start = {'lat': 40.0, 'lon': -120.0, 'level': 850.0}
+    start = {'lat': [40.0], 'lon': [-120.0], 'level': [850.0]}
     num_steps = 10
     trajectory = run_trajectory(start, zero_velocity_field, num_steps)
 
@@ -63,17 +63,17 @@ def test_run_trajectory_constant_velocity(constant_velocity_field):
     """
     Test that a particle in a constant-velocity field moves as expected.
     """
-    start = {'lat': 40.0, 'lon': -120.0, 'level': 850.0}
+    start = {'lat': [40.0], 'lon': [-120.0], 'level': [850.0]}
     num_steps = 10
     trajectory = run_trajectory(start, constant_velocity_field, num_steps)
 
     # --- Check that the particle has moved the correct distance ---
-    expected_lat = start['lat'] + num_steps
-    expected_lon = start['lon'] + num_steps
+    expected_lat = start['lat'][0] + num_steps
+    expected_lon = start['lon'][0] + num_steps
 
-    assert trajectory['lat'].values[-1] == expected_lat
-    assert trajectory['lon'].values[-1] == expected_lon
-    assert trajectory['level'].values[-1] == start['level']
+    assert trajectory['lat'].values[0, -1] == expected_lat
+    assert trajectory['lon'].values[0, -1] == expected_lon
+    assert trajectory['level'].values[0, -1] == start['level'][0]
 
 
 @pytest.fixture
@@ -106,7 +106,7 @@ def test_run_trajectory_trilinear_interpolation(gradient_velocity_field_3d):
     Test that the trajectory integration correctly uses trilinear interpolation.
     """
     # Start the particle exactly halfway between grid points.
-    start = {'lat': 35.0, 'lon': -115.0, 'level': 750.0}
+    start = {'lat': [35.0], 'lon': [-115.0], 'level': [750.0]}
     num_steps = 1
     trajectory = run_trajectory(start, gradient_velocity_field_3d, num_steps)
 
@@ -117,9 +117,9 @@ def test_run_trajectory_trilinear_interpolation(gradient_velocity_field_3d):
     expected_level = 734.224375
 
     # --- Check that the particle has moved to the interpolated position ---
-    assert np.isclose(trajectory['lat'].values[-1], expected_lat)
-    assert np.isclose(trajectory['lon'].values[-1], expected_lon)
-    assert np.isclose(trajectory['level'].values[-1], expected_level)
+    assert np.isclose(trajectory['lat'].values[0, -1], expected_lat)
+    assert np.isclose(trajectory['lon'].values[0, -1], expected_lon)
+    assert np.isclose(trajectory['level'].values[0, -1], expected_level)
 
 
 @pytest.fixture
@@ -163,7 +163,7 @@ def test_run_trajectory_solid_body_rotation(solid_body_rotation_field):
     A particle in this field should maintain a constant distance from the
     center of rotation and a constant vertical level.
     """
-    start = {'lat': 45.0, 'lon': -100.0, 'level': 850.0}
+    start = {'lat': [45.0], 'lon': [-100.0], 'level': [850.0]}
     num_steps = 25
     dt = 0.1  # Use a smaller time step for better accuracy
 
@@ -174,12 +174,12 @@ def test_run_trajectory_solid_body_rotation(solid_body_rotation_field):
     # --- Check that the particle maintains a constant radius from the center ---
     lat_center, lon_center = 40, -100
     radius_initial = np.sqrt(
-        (trajectory['lat'].values[0] - lat_center) ** 2
-        + (trajectory['lon'].values[0] - lon_center) ** 2
+        (trajectory['lat'].values[0, 0] - lat_center) ** 2
+        + (trajectory['lon'].values[0, 0] - lon_center) ** 2
     )
     radius_final = np.sqrt(
-        (trajectory['lat'].values[-1] - lat_center) ** 2
-        + (trajectory['lon'].values[-1] - lon_center) ** 2
+        (trajectory['lat'].values[0, -1] - lat_center) ** 2
+        + (trajectory['lon'].values[0, -1] - lon_center) ** 2
     )
 
     # The radius should be nearly constant (within a small tolerance)
@@ -211,7 +211,7 @@ def test_run_trajectory_3d_vertical_motion(constant_vertical_velocity_field):
     """
     Test a 3D trajectory with only vertical motion.
     """
-    start = {'lat': 35.0, 'lon': -105.0, 'level': 850.0}
+    start = {'lat': [35.0], 'lon': [-105.0], 'level': [850.0]}
     num_steps = 5
     dt = 1.0  # 1 hour time step
 
@@ -220,9 +220,35 @@ def test_run_trajectory_3d_vertical_motion(constant_vertical_velocity_field):
     )
 
     # --- Check that the particle has moved vertically ---
-    expected_level = start['level'] + (-50.0 * num_steps)
-    assert np.isclose(trajectory['level'].values[-1], expected_level)
+    expected_level = start['level'][0] + (-50.0 * num_steps)
+    assert np.isclose(trajectory['level'].values[0, -1], expected_level)
 
     # --- Check that the particle has not moved horizontally ---
     assert np.all(trajectory['lat'].values == start['lat'])
     assert np.all(trajectory['lon'].values == start['lon'])
+
+
+def test_run_trajectory_multiple_particles(constant_velocity_field):
+    """
+    Test running the model with multiple particles simultaneously.
+    """
+    start_points = {
+        'lat': [40.0, 42.0],
+        'lon': [-120.0, -122.0],
+        'level': [850.0, 850.0],
+    }
+    num_steps = 10
+    trajectory = run_trajectory(
+        start_points, constant_velocity_field, num_steps
+    )
+
+    # --- Check that both particles moved the correct distance ---
+    expected_lat_p1 = start_points['lat'][0] + num_steps
+    expected_lon_p1 = start_points['lon'][0] + num_steps
+    expected_lat_p2 = start_points['lat'][1] + num_steps
+    expected_lon_p2 = start_points['lon'][1] + num_steps
+
+    assert trajectory['lat'].values[0, -1] == expected_lat_p1
+    assert trajectory['lon'].values[0, -1] == expected_lon_p1
+    assert trajectory['lat'].values[1, -1] == expected_lat_p2
+    assert trajectory['lon'].values[1, -1] == expected_lon_p2
