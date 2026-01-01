@@ -10,6 +10,47 @@ import xarray as xr
 
 
 @numba.jit(nopython=True)
+def _calculate_interpolation_weights_jit(
+    point: float, grid: np.ndarray, i: int
+) -> tuple[float, float, int, int]:
+    """
+    Calculate interpolation weights and clamp indices for a single dimension.
+
+    Parameters
+    ----------
+    point : float
+        The coordinate of the point for which to calculate weights.
+    grid : np.ndarray
+        The 1D grid of coordinates.
+    i : int
+        The lower-bound index for the point in the grid.
+
+    Returns
+    -------
+    tuple[float, float, int, int]
+        A tuple containing the weight for the lower grid point (w1), the
+        weight for the upper grid point (w2), and the clamped lower (i1)
+        and upper (i2) indices.
+    """
+    # Clamp index to be within bounds
+    i = max(0, min(i, len(grid) - 2))
+    i1, i2 = i, i + 1
+
+    # Grid points surrounding the current location
+    grid1, grid2 = grid[i1], grid[i2]
+
+    # Calculate interpolation weights, avoiding division by zero
+    delta = grid2 - grid1
+    if delta == 0:
+        return 1.0, 0.0, i1, i2
+
+    w1 = (grid2 - point) / delta
+    w2 = (point - grid1) / delta
+
+    return w1, w2, i1, i2
+
+
+@numba.jit(nopython=True)
 def _quadrilinear_interpolation_jit(
     lat: float,
     lon: float,
@@ -53,59 +94,40 @@ def _quadrilinear_interpolation_jit(
     float
         The interpolated value at the given lat/lon/level/time point.
     """
-    # Find lower-bound indices for lat, lon, level, and time
+    # Find lower-bound indices
     i = np.searchsorted(grid_lat, lat) - 1
     j = np.searchsorted(grid_lon, lon) - 1
     k = np.searchsorted(grid_level, level) - 1
     m = np.searchsorted(grid_time, time) - 1
 
-    # Clamp indices to be within bounds
-    i = max(0, min(i, len(grid_lat) - 2))
-    j = max(0, min(j, len(grid_lon) - 2))
-    k = max(0, min(k, len(grid_level) - 2))
-    m = max(0, min(m, len(grid_time) - 2))
-
-    # Grid points surrounding the current location
-    lat1, lat2 = grid_lat[i], grid_lat[i + 1]
-    lon1, lon2 = grid_lon[j], grid_lon[j + 1]
-    level1, level2 = grid_level[k], grid_level[k + 1]
-    time1, time2 = grid_time[m], grid_time[m + 1]
+    # Calculate weights and clamped indices
+    w_lat1, w_lat2, i1, i2 = _calculate_interpolation_weights_jit(lat, grid_lat, i)
+    w_lon1, w_lon2, j1, j2 = _calculate_interpolation_weights_jit(lon, grid_lon, j)
+    w_level1, w_level2, k1, k2 = _calculate_interpolation_weights_jit(
+        level, grid_level, k
+    )
+    w_time1, w_time2, m1, m2 = _calculate_interpolation_weights_jit(time, grid_time, m)
 
     # Data values at the 16 corners of the hypercube
     # Time slice 1
-    q1111 = data[m, k, i, j]
-    q1112 = data[m, k, i, j + 1]
-    q1121 = data[m, k, i + 1, j]
-    q1122 = data[m, k, i + 1, j + 1]
-    q1211 = data[m, k + 1, i, j]
-    q1212 = data[m, k + 1, i, j + 1]
-    q1221 = data[m, k + 1, i + 1, j]
-    q1222 = data[m, k + 1, i + 1, j + 1]
+    q1111 = data[m1, k1, i1, j1]
+    q1112 = data[m1, k1, i1, j2]
+    q1121 = data[m1, k1, i2, j1]
+    q1122 = data[m1, k1, i2, j2]
+    q1211 = data[m1, k2, i1, j1]
+    q1212 = data[m1, k2, i1, j2]
+    q1221 = data[m1, k2, i2, j1]
+    q1222 = data[m1, k2, i2, j2]
 
     # Time slice 2
-    q2111 = data[m + 1, k, i, j]
-    q2112 = data[m + 1, k, i, j + 1]
-    q2121 = data[m + 1, k, i + 1, j]
-    q2122 = data[m + 1, k, i + 1, j + 1]
-    q2211 = data[m + 1, k + 1, i, j]
-    q2212 = data[m + 1, k + 1, i, j + 1]
-    q2221 = data[m + 1, k + 1, i + 1, j]
-    q2222 = data[m + 1, k + 1, i + 1, j + 1]
-
-    # Calculate interpolation weights, avoiding division by zero
-    d_lat = lat2 - lat1 if (lat2 - lat1) != 0 else 1
-    d_lon = lon2 - lon1 if (lon2 - lon1) != 0 else 1
-    d_level = level2 - level1 if (level2 - level1) != 0 else 1
-    d_time = time2 - time1 if (time2 - time1) != 0 else 1
-
-    w_lat1 = (lat2 - lat) / d_lat
-    w_lat2 = (lat - lat1) / d_lat
-    w_lon1 = (lon2 - lon) / d_lon
-    w_lon2 = (lon - lon1) / d_lon
-    w_level1 = (level2 - level) / d_level
-    w_level2 = (level - level1) / d_level
-    w_time1 = (time2 - time) / d_time
-    w_time2 = (time - time1) / d_time
+    q2111 = data[m2, k1, i1, j1]
+    q2112 = data[m2, k1, i1, j2]
+    q2121 = data[m2, k1, i2, j1]
+    q2122 = data[m2, k1, i2, j2]
+    q2211 = data[m2, k2, i1, j1]
+    q2212 = data[m2, k2, i1, j2]
+    q2221 = data[m2, k2, i2, j1]
+    q2222 = data[m2, k2, i2, j2]
 
     # Interpolate along longitude (x-axis) for both time slices
     c000 = w_lon1 * q1111 + w_lon2 * q1112
@@ -168,37 +190,20 @@ def _bilinear_interpolation_jit(
     i = np.searchsorted(grid_lat, lat) - 1
     j = np.searchsorted(grid_lon, lon) - 1
 
-    # Clamp indices to be within bounds
-    i = max(0, min(i, len(grid_lat) - 2))
-    j = max(0, min(j, len(grid_lon) - 2))
-
-    # Grid points surrounding the current location
-    lat1, lat2 = grid_lat[i], grid_lat[i + 1]
-    lon1, lon2 = grid_lon[j], grid_lon[j + 1]
+    # Calculate weights and clamped indices
+    w_lat1, w_lat2, i1, i2 = _calculate_interpolation_weights_jit(lat, grid_lat, i)
+    w_lon1, w_lon2, j1, j2 = _calculate_interpolation_weights_jit(lon, grid_lon, j)
 
     # Data values at the grid corners
-    q11 = data[i, j]
-    q21 = data[i + 1, j]
-    q12 = data[i, j + 1]
-    q22 = data[i + 1, j + 1]
-
-    # Calculate interpolation weights
-    d_lat = lat2 - lat1
-    d_lon = lon2 - lon1
-
-    # Avoid division by zero if grid is singular
-    if d_lat == 0 or d_lon == 0:
-        return q11
-
-    w1 = (lat2 - lat) / d_lat
-    w2 = (lat - lat1) / d_lat
-    w3 = (lon2 - lon) / d_lon
-    w4 = (lon - lon1) / d_lon
+    q11 = data[i1, j1]
+    q21 = data[i2, j1]
+    q12 = data[i1, j2]
+    q22 = data[i2, j2]
 
     # Perform the interpolation
-    f_lon1 = w1 * q11 + w2 * q21
-    f_lon2 = w1 * q12 + w2 * q22
-    interpolated_value = w3 * f_lon1 + w4 * f_lon2
+    f_lon1 = w_lat1 * q11 + w_lat2 * q21
+    f_lon2 = w_lat1 * q12 + w_lat2 * q22
+    interpolated_value = w_lon1 * f_lon1 + w_lon2 * f_lon2
 
     return interpolated_value
 
