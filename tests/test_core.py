@@ -5,7 +5,40 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from plat.core import run_trajectory
+from plat.core import _calculate_interpolation_weights_jit, run_trajectory
+
+
+def test_calculate_interpolation_weights_jit():
+    """
+    Test the _calculate_interpolation_weights_jit function.
+
+    This test validates two scenarios:
+    1.  Standard case: A point between two grid cells.
+    2.  Edge case: A point on a grid cell with a co-located neighbor (delta=0),
+        which should return weights of 1.0 and 0.0.
+    """
+    grid = np.array([10.0, 20.0, 30.0, 30.0])
+
+    # --- Test standard interpolation ---
+    # Point is 25% of the way between 10.0 and 20.0
+    point1 = 12.5
+    i1 = 0
+    w1, w2, i1_out, i2_out = _calculate_interpolation_weights_jit(point1, grid, i1)
+    # Expect w1=0.75 (closer to 10.0), w2=0.25 (further from 20.0)
+    assert np.isclose(w1, 0.75)
+    assert np.isclose(w2, 0.25)
+    assert i1_out == 0
+    assert i2_out == 1
+
+    # --- Test edge case with delta = 0 ---
+    point2 = 30.0
+    i2 = 2
+    w1, w2, i1_out, i2_out = _calculate_interpolation_weights_jit(point2, grid, i2)
+    # Expect weights to be 1.0 and 0.0, avoiding division by zero
+    assert np.isclose(w1, 1.0)
+    assert np.isclose(w2, 0.0)
+    assert i1_out == 2
+    assert i2_out == 3
 
 
 @pytest.fixture
