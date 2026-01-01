@@ -2,6 +2,7 @@
 """Unit tests for the core trajectory model."""
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 from plat.core import run_trajectory
@@ -9,39 +10,41 @@ from plat.core import run_trajectory
 
 @pytest.fixture
 def zero_velocity_field() -> xr.Dataset:
-    """Create a 3D velocity field with zero velocity everywhere."""
+    """Create a 4D velocity field with zero velocity everywhere."""
     lat = np.arange(-90, 91, 10)
     lon = np.arange(-180, 181, 20)
     level = np.array([1000, 850, 500])
-    u = np.zeros((len(level), len(lat), len(lon)))
-    v = np.zeros((len(level), len(lat), len(lon)))
-    w = np.zeros((len(level), len(lat), len(lon)))
+    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00'])
+    u = np.zeros((len(time), len(level), len(lat), len(lon)))
+    v = np.zeros((len(time), len(level), len(lat), len(lon)))
+    w = np.zeros((len(time), len(level), len(lat), len(lon)))
     return xr.Dataset(
         {
-            'u': (('level', 'lat', 'lon'), u),
-            'v': (('level', 'lat', 'lon'), v),
-            'w': (('level', 'lat', 'lon'), w),
+            'u': (('time', 'level', 'lat', 'lon'), u),
+            'v': (('time', 'level', 'lat', 'lon'), v),
+            'w': (('time', 'level', 'lat', 'lon'), w),
         },
-        coords={'level': level, 'lat': lat, 'lon': lon},
+        coords={'time': time, 'level': level, 'lat': lat, 'lon': lon},
     )
 
 
 @pytest.fixture
 def constant_velocity_field() -> xr.Dataset:
-    """Create a 3D velocity field with constant velocity everywhere."""
+    """Create a 4D velocity field with constant velocity everywhere."""
     lat = np.arange(-90, 91, 10)
     lon = np.arange(-180, 181, 20)
     level = np.array([1000, 850, 500])
-    u = np.ones((len(level), len(lat), len(lon)))
-    v = np.ones((len(level), len(lat), len(lon)))
-    w = np.zeros((len(level), len(lat), len(lon)))  # No vertical motion
+    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00'])
+    u = np.ones((len(time), len(level), len(lat), len(lon)))
+    v = np.ones((len(time), len(level), len(lat), len(lon)))
+    w = np.zeros((len(time), len(level), len(lat), len(lon)))  # No vertical motion
     return xr.Dataset(
         {
-            'u': (('level', 'lat', 'lon'), u),
-            'v': (('level', 'lat', 'lon'), v),
-            'w': (('level', 'lat', 'lon'), w),
+            'u': (('time', 'level', 'lat', 'lon'), u),
+            'v': (('time', 'level', 'lat', 'lon'), v),
+            'w': (('time', 'level', 'lat', 'lon'), w),
         },
-        coords={'level': level, 'lat': lat, 'lon': lon},
+        coords={'time': time, 'level': level, 'lat': lat, 'lon': lon},
     )
 
 
@@ -49,21 +52,31 @@ def test_run_trajectory_stationary_particle(zero_velocity_field):
     """
     Test that a particle in a zero-velocity field remains stationary.
     """
-    start = {'lat': [40.0], 'lon': [-120.0], 'level': [850.0]}
+    start = {
+        'lat': [40.0],
+        'lon': [-120.0],
+        'level': [850.0],
+        'time': pd.Timestamp('2023-01-01T00:00:00'),
+    }
     num_steps = 10
     trajectory = run_trajectory(start, zero_velocity_field, num_steps)
 
     # --- Check that the particle has not moved ---
-    assert np.all(trajectory['lat'].values == start['lat'])
-    assert np.all(trajectory['lon'].values == start['lon'])
-    assert np.all(trajectory['level'].values == start['level'])
+    assert np.all(np.isclose(trajectory['lat'].values, start['lat']))
+    assert np.all(np.isclose(trajectory['lon'].values, start['lon']))
+    assert np.all(np.isclose(trajectory['level'].values, start['level']))
 
 
 def test_run_trajectory_constant_velocity(constant_velocity_field):
     """
     Test that a particle in a constant-velocity field moves as expected.
     """
-    start = {'lat': [40.0], 'lon': [-120.0], 'level': [850.0]}
+    start = {
+        'lat': [40.0],
+        'lon': [-120.0],
+        'level': [850.0],
+        'time': pd.Timestamp('2023-01-01T00:00:00'),
+    }
     num_steps = 10
     trajectory = run_trajectory(start, constant_velocity_field, num_steps)
 
@@ -71,17 +84,18 @@ def test_run_trajectory_constant_velocity(constant_velocity_field):
     expected_lat = start['lat'][0] + num_steps
     expected_lon = start['lon'][0] + num_steps
 
-    assert trajectory['lat'].values[0, -1] == expected_lat
-    assert trajectory['lon'].values[0, -1] == expected_lon
-    assert trajectory['level'].values[0, -1] == start['level'][0]
+    assert np.isclose(trajectory['lat'].values[0, -1], expected_lat)
+    assert np.isclose(trajectory['lon'].values[0, -1], expected_lon)
+    assert np.isclose(trajectory['level'].values[0, -1], start['level'][0])
 
 
 @pytest.fixture
-def gradient_velocity_field_3d() -> xr.Dataset:
-    """Create a 3D velocity field with a linear gradient."""
+def gradient_velocity_field_4d() -> xr.Dataset:
+    """Create a 4D velocity field with a linear gradient."""
     lat = np.array([30, 40])
     lon = np.array([-120, -110])
     level = np.array([800, 700])
+    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00'])
     # u increases with longitude, v with latitude, w with level
     u_2d = np.array([[1, 2], [1, 2]])
     v_2d = np.array([[1, 1], [2, 2]])
@@ -91,24 +105,33 @@ def gradient_velocity_field_3d() -> xr.Dataset:
     v = np.stack([v_2d, v_2d])
     w = np.stack([w_2d, w_2d * 2])  # w=-20 at level=700
 
+    u_4d = np.stack([u, u])
+    v_4d = np.stack([v, v])
+    w_4d = np.stack([w, w])
+
     return xr.Dataset(
         {
-            'u': (('level', 'lat', 'lon'), u),
-            'v': (('level', 'lat', 'lon'), v),
-            'w': (('level', 'lat', 'lon'), w),
+            'u': (('time', 'level', 'lat', 'lon'), u_4d),
+            'v': (('time', 'level', 'lat', 'lon'), v_4d),
+            'w': (('time', 'level', 'lat', 'lon'), w_4d),
         },
-        coords={'level': level, 'lat': lat, 'lon': lon},
+        coords={'time': time, 'level': level, 'lat': lat, 'lon': lon},
     )
 
 
-def test_run_trajectory_trilinear_interpolation(gradient_velocity_field_3d):
+def test_run_trajectory_quadrilinear_interpolation(gradient_velocity_field_4d):
     """
-    Test that the trajectory integration correctly uses trilinear interpolation.
+    Test that the trajectory integration correctly uses quadrilinear interpolation.
     """
     # Start the particle exactly halfway between grid points.
-    start = {'lat': [35.0], 'lon': [-115.0], 'level': [750.0]}
+    start = {
+        'lat': [35.0],
+        'lon': [-115.0],
+        'level': [750.0],
+        'time': pd.Timestamp('2023-01-01T00:00:00'),
+    }
     num_steps = 1
-    trajectory = run_trajectory(start, gradient_velocity_field_3d, num_steps)
+    trajectory = run_trajectory(start, gradient_velocity_field_4d, num_steps)
 
     # The expected values are from a manual calculation of a single RK4 step
     # with the given gradient field.
@@ -125,12 +148,13 @@ def test_run_trajectory_trilinear_interpolation(gradient_velocity_field_3d):
 @pytest.fixture
 def solid_body_rotation_field() -> xr.Dataset:
     """
-    Create a 3D velocity field corresponding to solid body rotation.
+    Create a 4D velocity field corresponding to solid body rotation.
     The vertical velocity is zero.
     """
     lat = np.arange(30, 51, 1)
     lon = np.arange(-110, -89, 1)
     level = np.array([1000, 850, 500])
+    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T06:00:00'])
     lon_grid, lat_grid = np.meshgrid(lon, lat)
 
     # Center of rotation
@@ -141,18 +165,21 @@ def solid_body_rotation_field() -> xr.Dataset:
     u_2d = -omega * (lat_grid - lat_center)
     v_2d = omega * (lon_grid - lon_center)
 
-    # Add a level dimension
+    # Add level and time dimensions
     u = np.stack([u_2d] * len(level))
     v = np.stack([v_2d] * len(level))
     w = np.zeros_like(u)
+    u_4d = np.stack([u] * len(time))
+    v_4d = np.stack([v] * len(time))
+    w_4d = np.stack([w] * len(time))
 
     return xr.Dataset(
         {
-            'u': (('level', 'lat', 'lon'), u),
-            'v': (('level', 'lat', 'lon'), v),
-            'w': (('level', 'lat', 'lon'), w),
+            'u': (('time', 'level', 'lat', 'lon'), u_4d),
+            'v': (('time', 'level', 'lat', 'lon'), v_4d),
+            'w': (('time', 'level', 'lat', 'lon'), w_4d),
         },
-        coords={'level': level, 'lat': lat, 'lon': lon},
+        coords={'time': time, 'level': level, 'lat': lat, 'lon': lon},
     )
 
 
@@ -163,7 +190,12 @@ def test_run_trajectory_solid_body_rotation(solid_body_rotation_field):
     A particle in this field should maintain a constant distance from the
     center of rotation and a constant vertical level.
     """
-    start = {'lat': [45.0], 'lon': [-100.0], 'level': [850.0]}
+    start = {
+        'lat': [45.0],
+        'lon': [-100.0],
+        'level': [850.0],
+        'time': pd.Timestamp('2023-01-01T00:00:00'),
+    }
     num_steps = 25
     dt = 0.1  # Use a smaller time step for better accuracy
 
@@ -185,33 +217,39 @@ def test_run_trajectory_solid_body_rotation(solid_body_rotation_field):
     # The radius should be nearly constant (within a small tolerance)
     assert np.isclose(radius_initial, radius_final, rtol=1e-3)
     # The level should be constant
-    assert np.all(trajectory['level'].values == start['level'])
+    assert np.all(np.isclose(trajectory['level'].values, start['level']))
 
 
 @pytest.fixture
 def constant_vertical_velocity_field() -> xr.Dataset:
-    """Create a 3D velocity field with constant vertical velocity."""
+    """Create a 4D velocity field with constant vertical velocity."""
     lat = np.arange(30, 41, 1)
     lon = np.arange(-110, -99, 1)
     level = np.arange(1000, 400, -100)
-    u = np.zeros((len(level), len(lat), len(lon)))
-    v = np.zeros((len(level), len(lat), len(lon)))
-    w = np.full((len(level), len(lat), len(lon)), -50.0)  # Constant decent
+    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00'])
+    u = np.zeros((len(time), len(level), len(lat), len(lon)))
+    v = np.zeros((len(time), len(level), len(lat), len(lon)))
+    w = np.full((len(time), len(level), len(lat), len(lon)), -50.0)  # Constant decent
     return xr.Dataset(
         {
-            'u': (('level', 'lat', 'lon'), u),
-            'v': (('level', 'lat', 'lon'), v),
-            'w': (('level', 'lat', 'lon'), w),
+            'u': (('time', 'level', 'lat', 'lon'), u),
+            'v': (('time', 'level', 'lat', 'lon'), v),
+            'w': (('time', 'level', 'lat', 'lon'), w),
         },
-        coords={'level': level, 'lat': lat, 'lon': lon},
+        coords={'time': time, 'level': level, 'lat': lat, 'lon': lon},
     )
 
 
-def test_run_trajectory_3d_vertical_motion(constant_vertical_velocity_field):
+def test_run_trajectory_4d_vertical_motion(constant_vertical_velocity_field):
     """
-    Test a 3D trajectory with only vertical motion.
+    Test a 4D trajectory with only vertical motion.
     """
-    start = {'lat': [35.0], 'lon': [-105.0], 'level': [850.0]}
+    start = {
+        'lat': [35.0],
+        'lon': [-105.0],
+        'level': [850.0],
+        'time': pd.Timestamp('2023-01-01T00:00:00'),
+    }
     num_steps = 5
     dt = 1.0  # 1 hour time step
 
@@ -224,8 +262,8 @@ def test_run_trajectory_3d_vertical_motion(constant_vertical_velocity_field):
     assert np.isclose(trajectory['level'].values[0, -1], expected_level)
 
     # --- Check that the particle has not moved horizontally ---
-    assert np.all(trajectory['lat'].values == start['lat'])
-    assert np.all(trajectory['lon'].values == start['lon'])
+    assert np.all(np.isclose(trajectory['lat'].values, start['lat']))
+    assert np.all(np.isclose(trajectory['lon'].values, start['lon']))
 
 
 def test_run_trajectory_multiple_particles(constant_velocity_field):
@@ -236,6 +274,7 @@ def test_run_trajectory_multiple_particles(constant_velocity_field):
         'lat': [40.0, 42.0],
         'lon': [-120.0, -122.0],
         'level': [850.0, 850.0],
+        'time': pd.Timestamp('2023-01-01T00:00:00'),
     }
     num_steps = 10
     trajectory = run_trajectory(
@@ -248,7 +287,66 @@ def test_run_trajectory_multiple_particles(constant_velocity_field):
     expected_lat_p2 = start_points['lat'][1] + num_steps
     expected_lon_p2 = start_points['lon'][1] + num_steps
 
-    assert trajectory['lat'].values[0, -1] == expected_lat_p1
-    assert trajectory['lon'].values[0, -1] == expected_lon_p1
-    assert trajectory['lat'].values[1, -1] == expected_lat_p2
-    assert trajectory['lon'].values[1, -1] == expected_lon_p2
+    assert np.isclose(trajectory['lat'].values[0, -1], expected_lat_p1)
+    assert np.isclose(trajectory['lon'].values[0, -1], expected_lon_p1)
+    assert np.isclose(trajectory['lat'].values[1, -1], expected_lat_p2)
+    assert np.isclose(trajectory['lon'].values[1, -1], expected_lon_p2)
+
+
+@pytest.fixture
+def time_varying_velocity_field() -> xr.Dataset:
+    """Create a 4D velocity field where u increases with time."""
+    lat = np.array([30, 40])
+    lon = np.array([-120, -110])
+    level = np.array([800])
+    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00', '2023-01-01T02:00:00'])
+
+    # At T0, u is 1.0 everywhere. At T1, u is 2.0. At T2, u is 3.0
+    u_t0 = np.ones((len(level), len(lat), len(lon)))
+    u_t1 = np.full((len(level), len(lat), len(lon)), 2.0)
+    u_t2 = np.full((len(level), len(lat), len(lon)), 3.0)
+    u = np.stack([u_t0, u_t1, u_t2])
+
+    v = np.zeros_like(u)
+    w = np.zeros_like(u)
+
+    return xr.Dataset(
+        {
+            'u': (('time', 'level', 'lat', 'lon'), u),
+            'v': (('time', 'level', 'lat', 'lon'), v),
+            'w': (('time', 'level', 'lat', 'lon'), w),
+        },
+        coords={'time': time, 'level': level, 'lat': lat, 'lon': lon},
+    )
+
+
+def test_run_trajectory_time_interpolation(time_varying_velocity_field):
+    """
+    Test that the trajectory correctly interpolates velocity in time.
+    """
+    # Start the particle halfway in time between the two time slices.
+    start = {
+        'lat': [35.0],
+        'lon': [-115.0],
+        'level': [800.0],
+        'time': pd.Timestamp('2023-01-01T00:30:00'),
+    }
+    num_steps = 1
+    dt = 1.0  # 1 hour step
+
+    trajectory = run_trajectory(
+        start, time_varying_velocity_field, num_steps, dt=dt
+    )
+
+    # Manual RK4 calculation for this specific case:
+    # u_initial is 1.5 (halfway between 1.0 and 2.0)
+    # The final velocity is (k1 + 2*k2 + 2*k3 + k4) / 6
+    # k1_u = 1.5
+    # k2_u, k3_u are at t=1h, so u=2.0
+    # k4 is at t=1.5h, so u is 2.5
+    # u_final = (1.5 + 2*2.0 + 2*2.0 + 2.5)/6 = 12.0/6 = 2.0
+    expected_lon = start['lon'][0] + 2.0 * dt
+    assert np.isclose(trajectory['lon'].values[0, -1], expected_lon)
+    assert np.isclose(trajectory['lat'].values[0, -1], start['lat'][0])
+    assert np.isclose(trajectory['level'].values[0, -1], start['level'][0])
+    assert trajectory['time'].values[0, -1] == pd.Timestamp('2023-01-01T01:30:00')

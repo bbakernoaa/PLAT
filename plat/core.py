@@ -5,21 +5,24 @@ from typing import Dict, Union
 
 import numba
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 
 @numba.jit(nopython=True)
-def _trilinear_interpolation_jit(
+def _quadrilinear_interpolation_jit(
     lat: float,
     lon: float,
     level: float,
+    time: float,
     grid_lat: np.ndarray,
     grid_lon: np.ndarray,
     grid_level: np.ndarray,
+    grid_time: np.ndarray,
     data: np.ndarray,
 ) -> float:
     """
-    Perform trilinear interpolation on a 3D grid.
+    Perform quadrilinear interpolation on a 4D grid.
 
     This function is JIT-compiled with Numba for performance.
 
@@ -31,50 +34,69 @@ def _trilinear_interpolation_jit(
         Longitude of the interpolation point.
     level : float
         Vertical level of the interpolation point.
+    time : float
+        Time of the interpolation point.
     grid_lat : np.ndarray
         A 1D array of latitude coordinates for the grid.
     grid_lon : np.ndarray
         A 1D array of longitude coordinates for the grid.
     grid_level : np.ndarray
         A 1D array of vertical level coordinates for the grid.
+    grid_time : np.ndarray
+        A 1D array of time coordinates for the grid.
     data : np.ndarray
-        A 3D array of data values corresponding to the grid. The expected
-        dimension order is (level, lat, lon).
+        A 4D array of data values corresponding to the grid. The expected
+        dimension order is (time, level, lat, lon).
 
     Returns
     -------
     float
-        The interpolated value at the given lat/lon/level point.
+        The interpolated value at the given lat/lon/level/time point.
     """
-    # Find lower-bound indices for lat, lon, and level
+    # Find lower-bound indices for lat, lon, level, and time
     i = np.searchsorted(grid_lat, lat) - 1
     j = np.searchsorted(grid_lon, lon) - 1
     k = np.searchsorted(grid_level, level) - 1
+    m = np.searchsorted(grid_time, time) - 1
 
     # Clamp indices to be within bounds
     i = max(0, min(i, len(grid_lat) - 2))
     j = max(0, min(j, len(grid_lon) - 2))
     k = max(0, min(k, len(grid_level) - 2))
+    m = max(0, min(m, len(grid_time) - 2))
 
     # Grid points surrounding the current location
     lat1, lat2 = grid_lat[i], grid_lat[i + 1]
     lon1, lon2 = grid_lon[j], grid_lon[j + 1]
     level1, level2 = grid_level[k], grid_level[k + 1]
+    time1, time2 = grid_time[m], grid_time[m + 1]
 
-    # Data values at the 8 corners of the cube
-    q111 = data[k, i, j]
-    q112 = data[k, i, j + 1]
-    q121 = data[k, i + 1, j]
-    q122 = data[k, i + 1, j + 1]
-    q211 = data[k + 1, i, j]
-    q212 = data[k + 1, i, j + 1]
-    q221 = data[k + 1, i + 1, j]
-    q222 = data[k + 1, i + 1, j + 1]
+    # Data values at the 16 corners of the hypercube
+    # Time slice 1
+    q1111 = data[m, k, i, j]
+    q1112 = data[m, k, i, j + 1]
+    q1121 = data[m, k, i + 1, j]
+    q1122 = data[m, k, i + 1, j + 1]
+    q1211 = data[m, k + 1, i, j]
+    q1212 = data[m, k + 1, i, j + 1]
+    q1221 = data[m, k + 1, i + 1, j]
+    q1222 = data[m, k + 1, i + 1, j + 1]
+
+    # Time slice 2
+    q2111 = data[m + 1, k, i, j]
+    q2112 = data[m + 1, k, i, j + 1]
+    q2121 = data[m + 1, k, i + 1, j]
+    q2122 = data[m + 1, k, i + 1, j + 1]
+    q2211 = data[m + 1, k + 1, i, j]
+    q2212 = data[m + 1, k + 1, i, j + 1]
+    q2221 = data[m + 1, k + 1, i + 1, j]
+    q2222 = data[m + 1, k + 1, i + 1, j + 1]
 
     # Calculate interpolation weights, avoiding division by zero
     d_lat = lat2 - lat1 if (lat2 - lat1) != 0 else 1
     d_lon = lon2 - lon1 if (lon2 - lon1) != 0 else 1
     d_level = level2 - level1 if (level2 - level1) != 0 else 1
+    d_time = time2 - time1 if (time2 - time1) != 0 else 1
 
     w_lat1 = (lat2 - lat) / d_lat
     w_lat2 = (lat - lat1) / d_lat
@@ -82,19 +104,31 @@ def _trilinear_interpolation_jit(
     w_lon2 = (lon - lon1) / d_lon
     w_level1 = (level2 - level) / d_level
     w_level2 = (level - level1) / d_level
+    w_time1 = (time2 - time) / d_time
+    w_time2 = (time - time1) / d_time
 
-    # Interpolate along the longitude axis (x-axis)
-    c00 = w_lon1 * q111 + w_lon2 * q112
-    c01 = w_lon1 * q121 + w_lon2 * q122
-    c10 = w_lon1 * q211 + w_lon2 * q212
-    c11 = w_lon1 * q221 + w_lon2 * q222
+    # Interpolate along longitude (x-axis) for both time slices
+    c000 = w_lon1 * q1111 + w_lon2 * q1112
+    c001 = w_lon1 * q1121 + w_lon2 * q1122
+    c010 = w_lon1 * q1211 + w_lon2 * q1212
+    c011 = w_lon1 * q1221 + w_lon2 * q1222
+    c100 = w_lon1 * q2111 + w_lon2 * q2112
+    c101 = w_lon1 * q2121 + w_lon2 * q2122
+    c110 = w_lon1 * q2211 + w_lon2 * q2212
+    c111 = w_lon1 * q2221 + w_lon2 * q2222
 
-    # Interpolate along the latitude axis (y-axis)
-    c0 = w_lat1 * c00 + w_lat2 * c01
-    c1 = w_lat1 * c10 + w_lat2 * c11
+    # Interpolate along latitude (y-axis) for both time slices
+    c00 = w_lat1 * c000 + w_lat2 * c001
+    c01 = w_lat1 * c010 + w_lat2 * c011
+    c10 = w_lat1 * c100 + w_lat2 * c101
+    c11 = w_lat1 * c110 + w_lat2 * c111
 
-    # Interpolate along the level axis (z-axis)
-    interpolated_value = w_level1 * c0 + w_level2 * c1
+    # Interpolate along level (z-axis) for both time slices
+    c0 = w_level1 * c00 + w_level2 * c01
+    c1 = w_level1 * c10 + w_level2 * c11
+
+    # Interpolate along time (t-axis)
+    interpolated_value = w_time1 * c0 + w_time2 * c1
 
     return interpolated_value
 
@@ -174,16 +208,18 @@ def _rk4_step_jit(
     lat: float,
     lon: float,
     level: float,
+    time: float,
     grid_lat: np.ndarray,
     grid_lon: np.ndarray,
     grid_level: np.ndarray,
+    grid_time: np.ndarray,
     u_data: np.ndarray,
     v_data: np.ndarray,
     w_data: np.ndarray,
-    dt: float,
+    dt_seconds: float,
 ) -> tuple[float, float, float]:
     """
-    Perform a single Runge-Kutta 4th order (RK4) integration step in 3D.
+    Perform a single Runge-Kutta 4th order (RK4) integration step in 4D.
 
     This function is JIT-compiled with Numba for performance.
 
@@ -195,63 +231,71 @@ def _rk4_step_jit(
         The current longitude of the particle.
     level : float
         The current vertical level of the particle.
+    time : float
+        The current time of the particle.
     grid_lat : np.ndarray
         The latitude coordinates of the velocity field grid.
     grid_lon : np.ndarray
         The longitude coordinates of the velocity field grid.
     grid_level : np.ndarray
         The vertical level coordinates of the velocity field grid.
+    grid_time : np.ndarray
+        The time coordinates of the velocity field grid.
     u_data : np.ndarray
-        A 3D array of the 'u' velocity component.
+        A 4D array of the 'u' velocity component.
     v_data : np.ndarray
-        A 3D array of the 'v' velocity component.
+        A 4D array of the 'v' velocity component.
     w_data : np.ndarray
-        A 3D array of the 'w' velocity component.
-    dt : float
-        The time step for the integration.
+        A 4D array of the 'w' velocity component.
+    dt_seconds : float
+        The time step for the integration in seconds.
 
     Returns
     -------
     tuple[float, float, float]
         A tuple containing the new latitude, longitude, and level.
     """
+    dt_hours = dt_seconds / 3600.0
     # --- RK4 k1 ---
-    u1 = _trilinear_interpolation_jit(lat, lon, level, grid_lat, grid_lon, grid_level, u_data)
-    v1 = _trilinear_interpolation_jit(lat, lon, level, grid_lat, grid_lon, grid_level, v_data)
-    w1 = _trilinear_interpolation_jit(lat, lon, level, grid_lat, grid_lon, grid_level, w_data)
+    u1 = _quadrilinear_interpolation_jit(lat, lon, level, time, grid_lat, grid_lon, grid_level, grid_time, u_data)
+    v1 = _quadrilinear_interpolation_jit(lat, lon, level, time, grid_lat, grid_lon, grid_level, grid_time, v_data)
+    w1 = _quadrilinear_interpolation_jit(lat, lon, level, time, grid_lat, grid_lon, grid_level, grid_time, w_data)
 
     # --- RK4 k2 ---
-    lat2 = lat + v1 * dt / 2
-    lon2 = lon + u1 * dt / 2
-    level2 = level + w1 * dt / 2
-    u2 = _trilinear_interpolation_jit(lat2, lon2, level2, grid_lat, grid_lon, grid_level, u_data)
-    v2 = _trilinear_interpolation_jit(lat2, lon2, level2, grid_lat, grid_lon, grid_level, v_data)
-    w2 = _trilinear_interpolation_jit(lat2, lon2, level2, grid_lat, grid_lon, grid_level, w_data)
+    lat2 = lat + v1 * dt_hours / 2
+    lon2 = lon + u1 * dt_hours / 2
+    level2 = level + w1 * dt_hours / 2
+    time2 = time + dt_seconds / 2
+    u2 = _quadrilinear_interpolation_jit(lat2, lon2, level2, time2, grid_lat, grid_lon, grid_level, grid_time, u_data)
+    v2 = _quadrilinear_interpolation_jit(lat2, lon2, level2, time2, grid_lat, grid_lon, grid_level, grid_time, v_data)
+    w2 = _quadrilinear_interpolation_jit(lat2, lon2, level2, time2, grid_lat, grid_lon, grid_level, grid_time, w_data)
 
     # --- RK4 k3 ---
-    lat3 = lat + v2 * dt / 2
-    lon3 = lon + u2 * dt / 2
-    level3 = level + w2 * dt / 2
-    u3 = _trilinear_interpolation_jit(lat3, lon3, level3, grid_lat, grid_lon, grid_level, u_data)
-    v3 = _trilinear_interpolation_jit(lat3, lon3, level3, grid_lat, grid_lon, grid_level, v_data)
-    w3 = _trilinear_interpolation_jit(lat3, lon3, level3, grid_lat, grid_lon, grid_level, w_data)
+    lat3 = lat + v2 * dt_hours / 2
+    lon3 = lon + u2 * dt_hours / 2
+    level3 = level + w2 * dt_hours / 2
+    time3 = time + dt_seconds / 2
+    u3 = _quadrilinear_interpolation_jit(lat3, lon3, level3, time3, grid_lat, grid_lon, grid_level, grid_time, u_data)
+    v3 = _quadrilinear_interpolation_jit(lat3, lon3, level3, time3, grid_lat, grid_lon, grid_level, grid_time, v_data)
+    w3 = _quadrilinear_interpolation_jit(lat3, lon3, level3, time3, grid_lat, grid_lon, grid_level, grid_time, w_data)
 
     # --- RK4 k4 ---
-    lat4 = lat + v3 * dt
-    lon4 = lon + u3 * dt
-    level4 = level + w3 * dt
-    u4 = _trilinear_interpolation_jit(lat4, lon4, level4, grid_lat, grid_lon, grid_level, u_data)
-    v4 = _trilinear_interpolation_jit(lat4, lon4, level4, grid_lat, grid_lon, grid_level, v_data)
-    w4 = _trilinear_interpolation_jit(lat4, lon4, level4, grid_lat, grid_lon, grid_level, w_data)
+    lat4 = lat + v3 * dt_hours
+    lon4 = lon + u3 * dt_hours
+    level4 = level + w3 * dt_hours
+    time4 = time + dt_seconds
+    u4 = _quadrilinear_interpolation_jit(lat4, lon4, level4, time4, grid_lat, grid_lon, grid_level, grid_time, u_data)
+    v4 = _quadrilinear_interpolation_jit(lat4, lon4, level4, time4, grid_lat, grid_lon, grid_level, grid_time, v_data)
+    w4 = _quadrilinear_interpolation_jit(lat4, lon4, level4, time4, grid_lat, grid_lon, grid_level, grid_time, w_data)
 
     # --- Final velocity and position update ---
-    u_final = (u1 + 2 * u2 + 2 * u3 + u4) / 6
-    v_final = (v1 + 2 * v2 + 2 * v3 + v4) / 6
-    w_final = (w1 + 2 * w2 + 2 * w3 + w4) / 6
+    u_final = (u1 + 2 * u2 + 2 * u3 + u4) / 6.0
+    v_final = (v1 + 2 * v2 + 2 * v3 + v4) / 6.0
+    w_final = (w1 + 2 * w2 + 2 * w3 + w4) / 6.0
 
-    new_lat = lat + v_final * dt
-    new_lon = lon + u_final * dt
-    new_level = level + w_final * dt
+    new_lat = lat + v_final * dt_hours
+    new_lon = lon + u_final * dt_hours
+    new_level = level + w_final * dt_hours
 
     return new_lat, new_lon, new_level
 
@@ -261,15 +305,17 @@ def _integrate_jit(
     trajectory_lat: np.ndarray,
     trajectory_lon: np.ndarray,
     trajectory_level: np.ndarray,
+    trajectory_time: np.ndarray,
     grid_lat: np.ndarray,
     grid_lon: np.ndarray,
     grid_level: np.ndarray,
+    grid_time: np.ndarray,
     u_data: np.ndarray,
     v_data: np.ndarray,
     w_data: np.ndarray,
     num_steps: int,
-    dt: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dt_seconds: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Perform the core trajectory integration using a Numba JIT-compiled loop.
     This function is designed for performance-critical computation and operates
@@ -284,26 +330,30 @@ def _integrate_jit(
         A 2D array (particle, time) to be filled with particle longitudes.
     trajectory_level : np.ndarray
         A 2D array (particle, time) to be filled with particle vertical levels.
+    trajectory_time : np.ndarray
+        A 2D array (particle, time) to be filled with particle times.
     grid_lat : np.ndarray
         The latitude coordinates of the velocity field grid.
     grid_lon : np.ndarray
         The longitude coordinates of the velocity field grid.
     grid_level : np.ndarray
         The vertical level coordinates of the velocity field grid.
+    grid_time : np.ndarray
+        The time coordinates of the velocity field grid.
     u_data : np.ndarray
-        A 3D array of the 'u' velocity component.
+        A 4D array of the 'u' velocity component.
     v_data : np.ndarray
-        A 3D array of the 'v' velocity component.
+        A 4D array of the 'v' velocity component.
     w_data : np.ndarray
-        A 3D array of the 'w' velocity component.
+        A 4D array of the 'w' velocity component.
     num_steps : int
         The number of integration steps to perform.
-    dt : float
-        The time step for the integration.
+    dt_seconds : float
+        The time step for the integration in seconds.
     Returns
     -------
-    tuple[np.ndarray, np.ndarray, np.ndarray]
-        A tuple containing the populated trajectory arrays for lat, lon, and level.
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        A tuple containing the populated trajectory arrays for lat, lon, level, and time.
     """
     num_particles = trajectory_lat.shape[0]
     for p in numba.prange(num_particles):  # Parallel loop over particles
@@ -312,41 +362,43 @@ def _integrate_jit(
                 trajectory_lat[p, i],
                 trajectory_lon[p, i],
                 trajectory_level[p, i],
+                trajectory_time[p, i],
                 grid_lat,
                 grid_lon,
                 grid_level,
+                grid_time,
                 u_data,
                 v_data,
                 w_data,
-                dt,
+                dt_seconds,
             )
             trajectory_lat[p, i + 1] = new_lat
             trajectory_lon[p, i + 1] = new_lon
             trajectory_level[p, i + 1] = new_level
+            trajectory_time[p, i + 1] = trajectory_time[p, i] + dt_seconds
 
-    return trajectory_lat, trajectory_lon, trajectory_level
+    return trajectory_lat, trajectory_lon, trajectory_level, trajectory_time
 
 
 def run_trajectory(
-    starting_points: Dict[str, Union[np.ndarray, list]],
+    starting_points: Dict[str, Union[np.ndarray, list, pd.Timestamp]],
     velocity_field: xr.Dataset,
     num_steps: int,
     dt: float = 1.0,
 ) -> xr.Dataset:
     """
-    Simulate multiple particle trajectories through a 3D velocity field.
+    Simulate multiple particle trajectories through a 4D velocity field.
     This function integrates particle positions using the Runge-Kutta 4th
     order (RK4) method. The core integration loop is JIT-compiled with Numba
     and parallelized to handle multiple particles efficiently.
     Parameters
     ----------
-    starting_points : Dict[str, Union[np.ndarray, list]]
+    starting_points : Dict[str, Union[np.ndarray, list, pd.Timestamp]]
         A dictionary defining the initial positions of the particles.
-        Must contain 'lat', 'lon', and 'level' keys with lists or NumPy
-        arrays of the same length.
+        Must contain 'lat', 'lon', 'level', and 'time' keys.
     velocity_field : xr.Dataset
         An xarray Dataset containing the velocity components 'u', 'v', and 'w'.
-        The dataset must have 'lat', 'lon', and 'level' as coordinates.
+        The dataset must have 'lat', 'lon', 'level', and 'time' as coordinates.
     num_steps : int
         The number of integration steps to perform.
     dt : float, optional
@@ -359,98 +411,120 @@ def run_trajectory(
     Examples
     --------
     >>> import numpy as np
+    >>> import pandas as pd
     >>> import xarray as xr
     >>> # Create a sample velocity field (e.g., solid body rotation)
     >>> lat_grid = np.arange(-90, 91, 10)
     >>> lon_grid = np.arange(-180, 181, 20)
     >>> level_grid = np.arange(1000, 900, -50)
+    >>> time_grid = pd.to_datetime(['2023-01-01T00:00', '2023-01-01T06:00'])
     >>> lon_rad, lat_rad = np.meshgrid(np.deg2rad(lon_grid), np.deg2rad(lat_grid))
     >>> u = -np.sin(lat_rad) * np.cos(lon_rad) * 10
     >>> v = np.sin(lon_rad) * 10
     >>> w = np.zeros_like(u)
-    >>> # Create a 3D velocity field
-    >>> u_3d = np.tile(u[np.newaxis, :, :], (len(level_grid), 1, 1))
-    >>> v_3d = np.tile(v[np.newaxis, :, :], (len(level_grid), 1, 1))
-    >>> w_3d = np.tile(w[np.newaxis, :, :], (len(level_grid), 1, 1))
+    >>> # Create a 4D velocity field
+    >>> u_4d = np.tile(u[np.newaxis, np.newaxis, :, :], (len(time_grid), len(level_grid), 1, 1))
+    >>> v_4d = np.tile(v[np.newaxis, np.newaxis, :, :], (len(time_grid), len(level_grid), 1, 1))
+    >>> w_4d = np.tile(w[np.newaxis, np.newaxis, :, :], (len(time_grid), len(level_grid), 1, 1))
     >>> velocity_field = xr.Dataset(
     ...     {
-    ...         'u': (('level', 'lat', 'lon'), u_3d),
-    ...         'v': (('level', 'lat', 'lon'), v_3d),
-    ...         'w': (('level', 'lat', 'lon'), w_3d),
+    ...         'u': (('time', 'level', 'lat', 'lon'), u_4d),
+    ...         'v': (('time', 'level', 'lat', 'lon'), v_4d),
+    ...         'w': (('time', 'level', 'lat', 'lon'), w_4d),
     ...     },
-    ...     coords={'lat': lat_grid, 'lon': lon_grid, 'level': level_grid}
+    ...     coords={'time': time_grid, 'lat': lat_grid, 'lon': lon_grid, 'level': level_grid}
     ... )
     >>> # Define starting points for multiple particles
-    >>> start_points = {'lat': [40.0, 45.0], 'lon': [-120.0, -115.0], 'level': [950, 950]}
+    >>> start_points = {
+    ...     'lat': [40.0, 45.0],
+    ...     'lon': [-120.0, -115.0],
+    ...     'level': [950, 950],
+    ...     'time': pd.Timestamp('2023-01-01T01:00')
+    ... }
     >>> trajectory_ds = run_trajectory(start_points, velocity_field, 10)
     >>> print(trajectory_ds)
     <xarray.Dataset>
-    Dimensions:   (time: 11, particle: 2)
+    Dimensions:   (particle: 2, step: 11)
     Coordinates:
-      * time      (time) int64 0 1 2 3 4 5 6 7 8 9 10
       * particle  (particle) int64 0 1
+      * step      (step) int64 0 1 2 3 4 5 6 7 8 9 10
     Data variables:
-        lat       (particle, time) float64 40.0 39.86 39.73 ... 43.51 43.4
-        lon       (particle, time) float64 -120.0 -119.5 -119.0 ... -111.3 -110.8
-        level     (particle, time) float64 950.0 950.0 950.0 ... 950.0 950.0
+        lat       (particle, step) float64 40.0 39.86 39.73 ... 43.51 43.4
+        lon       (particle, step) float64 -120.0 -119.5 -119.0 ... -111.3 -110.8
+        level     (particle, step) float64 950.0 950.0 950.0 ... 950.0 950.0
+        time      (particle, step) datetime64[ns] 2023-01-01T01:00:00 ... 2023-01...
     Attributes:
-        history:  3D particle trajectory calculated using RK4 integration with 10 ...
+        history:  4D particle trajectory calculated for 2 particles using RK4 integ...
     """
     # --- Prepare data for Numba kernel ---
     start_lat = np.atleast_1d(starting_points['lat'])
     start_lon = np.atleast_1d(starting_points['lon'])
     start_level = np.atleast_1d(starting_points['level'])
+    start_time = pd.to_datetime(np.atleast_1d(starting_points['time']))
     num_particles = len(start_lat)
+
+    # Convert timestamps to float64 for Numba compatibility
+    start_time_numeric = start_time.astype(np.int64) / 1e9
+    time_step_seconds = pd.Timedelta(hours=dt).total_seconds()
 
     # Pre-allocate numpy arrays for performance
     trajectory_lat = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
     trajectory_lon = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
     trajectory_level = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
+    trajectory_time = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
 
     trajectory_lat[:, 0] = start_lat
     trajectory_lon[:, 0] = start_lon
     trajectory_level[:, 0] = start_level
+    trajectory_time[:, 0] = start_time_numeric
 
     # Extract NumPy arrays from the velocity field for the JIT function.
     grid_lat = velocity_field['lat'].values
     grid_lon = velocity_field['lon'].values
     grid_level = velocity_field['level'].values
+    grid_time = velocity_field['time'].values.astype('datetime64[s]').astype(np.float64)
     u_data = velocity_field['u'].values
     v_data = velocity_field['v'].values
     w_data = velocity_field['w'].values
 
     # --- Run the JIT-compiled integration ---
-    trajectory_lat, trajectory_lon, trajectory_level = _integrate_jit(
+    traj_lat, traj_lon, traj_level, traj_time = _integrate_jit(
         trajectory_lat,
         trajectory_lon,
         trajectory_level,
+        trajectory_time,
         grid_lat,
         grid_lon,
         grid_level,
+        grid_time,
         u_data,
         v_data,
         w_data,
         num_steps,
-        dt,
+        time_step_seconds,
     )
 
     # --- Package the results into an xarray Dataset ---
+    # Convert numeric time back to datetime objects
+    traj_time_datetime = pd.to_datetime(traj_time.flatten(), unit='s').to_numpy().reshape(traj_time.shape)
+
     trajectory_ds = xr.Dataset(
         {
-            'lat': (('particle', 'time'), trajectory_lat),
-            'lon': (('particle', 'time'), trajectory_lon),
-            'level': (('particle', 'time'), trajectory_level),
+            'lat': (('particle', 'step'), traj_lat),
+            'lon': (('particle', 'step'), traj_lon),
+            'level': (('particle', 'step'), traj_level),
+            'time': (('particle', 'step'), traj_time_datetime),
         },
         coords={
-            'time': range(num_steps + 1),
             'particle': range(num_particles),
+            'step': range(num_steps + 1),
         },
     )
 
     # --- Scientific Hygiene: Update Attributes ---
     history_log = (
-        f"3D particle trajectory calculated for {num_particles} particles using RK4 "
-        f"integration with {num_steps} steps and dt={dt}."
+        f"4D particle trajectory calculated for {num_particles} particles using RK4 "
+        f"integration with {num_steps} steps and dt={dt} hours."
     )
     trajectory_ds.attrs['history'] = history_log
 
