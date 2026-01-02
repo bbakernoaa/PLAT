@@ -117,9 +117,10 @@ def test_run_trajectory_constant_velocity(constant_velocity_field):
     expected_lat = start['lat'][0] + num_steps
     expected_lon = start['lon'][0] + num_steps
 
-    assert np.isclose(trajectory['lat'].values[0, -1], expected_lat)
-    assert np.isclose(trajectory['lon'].values[0, -1], expected_lon)
-    assert np.isclose(trajectory['level'].values[0, -1], start['level'][0])
+    final_point = trajectory.isel(particle=0, time=-1)
+    assert np.isclose(final_point['lat'], expected_lat)
+    assert np.isclose(final_point['lon'], expected_lon)
+    assert np.isclose(final_point['level'], start['level'][0])
 
 
 @pytest.fixture
@@ -173,9 +174,10 @@ def test_run_trajectory_quadrilinear_interpolation(gradient_velocity_field_4d):
     expected_level = 734.224375
 
     # --- Check that the particle has moved to the interpolated position ---
-    assert np.isclose(trajectory['lat'].values[0, -1], expected_lat)
-    assert np.isclose(trajectory['lon'].values[0, -1], expected_lon)
-    assert np.isclose(trajectory['level'].values[0, -1], expected_level)
+    final_point = trajectory.isel(particle=0, time=-1)
+    assert np.isclose(final_point['lat'], expected_lat)
+    assert np.isclose(final_point['lon'], expected_lon)
+    assert np.isclose(final_point['level'], expected_level)
 
 
 @pytest.fixture
@@ -238,13 +240,16 @@ def test_run_trajectory_solid_body_rotation(solid_body_rotation_field):
 
     # --- Check that the particle maintains a constant radius from the center ---
     lat_center, lon_center = 40, -100
+    initial_point = trajectory.isel(particle=0, time=0)
+    final_point = trajectory.isel(particle=0, time=-1)
+
     radius_initial = np.sqrt(
-        (trajectory['lat'].values[0, 0] - lat_center) ** 2
-        + (trajectory['lon'].values[0, 0] - lon_center) ** 2
+        (initial_point['lat'] - lat_center) ** 2
+        + (initial_point['lon'] - lon_center) ** 2
     )
     radius_final = np.sqrt(
-        (trajectory['lat'].values[0, -1] - lat_center) ** 2
-        + (trajectory['lon'].values[0, -1] - lon_center) ** 2
+        (final_point['lat'] - lat_center) ** 2
+        + (final_point['lon'] - lon_center) ** 2
     )
 
     # The radius should be nearly constant (within a small tolerance)
@@ -292,7 +297,8 @@ def test_run_trajectory_4d_vertical_motion(constant_vertical_velocity_field):
 
     # --- Check that the particle has moved vertically ---
     expected_level = start['level'][0] + (-50.0 * num_steps)
-    assert np.isclose(trajectory['level'].values[0, -1], expected_level)
+    final_level = trajectory.isel(particle=0, time=-1)['level']
+    assert np.isclose(final_level, expected_level)
 
     # --- Check that the particle has not moved horizontally ---
     assert np.all(np.isclose(trajectory['lat'].values, start['lat']))
@@ -320,10 +326,13 @@ def test_run_trajectory_multiple_particles(constant_velocity_field):
     expected_lat_p2 = start_points['lat'][1] + num_steps
     expected_lon_p2 = start_points['lon'][1] + num_steps
 
-    assert np.isclose(trajectory['lat'].values[0, -1], expected_lat_p1)
-    assert np.isclose(trajectory['lon'].values[0, -1], expected_lon_p1)
-    assert np.isclose(trajectory['lat'].values[1, -1], expected_lat_p2)
-    assert np.isclose(trajectory['lon'].values[1, -1], expected_lon_p2)
+    final_point_p1 = trajectory.isel(particle=0, time=-1)
+    final_point_p2 = trajectory.isel(particle=1, time=-1)
+
+    assert np.isclose(final_point_p1['lat'], expected_lat_p1)
+    assert np.isclose(final_point_p1['lon'], expected_lon_p1)
+    assert np.isclose(final_point_p2['lat'], expected_lat_p2)
+    assert np.isclose(final_point_p2['lon'], expected_lon_p2)
 
 
 @pytest.fixture
@@ -379,7 +388,9 @@ def test_run_trajectory_time_interpolation(time_varying_velocity_field):
     # k4 is at t=1.5h, so u is 2.5
     # u_final = (1.5 + 2*2.0 + 2*2.0 + 2.5)/6 = 12.0/6 = 2.0
     expected_lon = start['lon'][0] + 2.0 * dt
-    assert np.isclose(trajectory['lon'].values[0, -1], expected_lon)
-    assert np.isclose(trajectory['lat'].values[0, -1], start['lat'][0])
-    assert np.isclose(trajectory['level'].values[0, -1], start['level'][0])
-    assert trajectory['time'].values[0, -1] == pd.Timestamp('2023-01-01T01:30:00')
+
+    final_point = trajectory.isel(particle=0, time=-1)
+    assert np.isclose(final_point['lon'], expected_lon)
+    assert np.isclose(final_point['lat'], start['lat'][0])
+    assert np.isclose(final_point['level'], start['level'][0])
+    assert final_point['time'] == pd.Timestamp('2023-01-01T01:30:00')

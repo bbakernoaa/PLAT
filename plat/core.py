@@ -449,15 +449,14 @@ def run_trajectory(
     >>> trajectory_ds = run_trajectory(start_points, velocity_field, 10)
     >>> print(trajectory_ds)
     <xarray.Dataset>
-    Dimensions:   (particle: 2, step: 11)
+    Dimensions:   (particle: 2, time: 11)
     Coordinates:
       * particle  (particle) int64 0 1
-      * step      (step) int64 0 1 2 3 4 5 6 7 8 9 10
+      * time      (time) datetime64[ns] 2023-01-01T01:00:00 ... 2023-01-01T11:00:00
     Data variables:
-        lat       (particle, step) float64 40.0 39.86 39.73 ... 43.51 43.4
-        lon       (particle, step) float64 -120.0 -119.5 -119.0 ... -111.3 -110.8
-        level     (particle, step) float64 950.0 950.0 950.0 ... 950.0 950.0
-        time      (particle, step) datetime64[ns] 2023-01-01T01:00:00 ... 2023-01...
+        lat       (particle, time) float64 40.0 39.86 39.73 ... 43.51 43.4
+        lon       (particle, time) float64 -120.0 -119.5 -119.0 ... -111.3 -110.8
+        level     (particle, time) float64 950.0 950.0 950.0 ... 950.0 950.0
     Attributes:
         history:  4D particle trajectory calculated for 2 particles using RK4 integ...
     """
@@ -510,19 +509,18 @@ def run_trajectory(
     )
 
     # --- Package the results into an xarray Dataset ---
-    # Convert numeric time back to datetime objects
-    traj_time_datetime = pd.to_datetime(traj_time.flatten(), unit='s').to_numpy().reshape(traj_time.shape)
+    # The time coordinate is the same for all particles, so we can take the first row.
+    time_coords = pd.to_datetime(traj_time[0, :], unit='s')
 
     trajectory_ds = xr.Dataset(
         {
-            'lat': (('particle', 'step'), traj_lat),
-            'lon': (('particle', 'step'), traj_lon),
-            'level': (('particle', 'step'), traj_level),
-            'time': (('particle', 'step'), traj_time_datetime),
+            'lat': (('particle', 'time'), traj_lat),
+            'lon': (('particle', 'time'), traj_lon),
+            'level': (('particle', 'time'), traj_level),
         },
         coords={
             'particle': range(num_particles),
-            'step': range(num_steps + 1),
+            'time': time_coords,
         },
     )
 
