@@ -87,12 +87,26 @@ class MetDataset:
         self.ds = self.ds.rename(rename_dict)
 
     def _get_coord_names(self) -> Dict[str, str]:
-        """Detect standard coordinate names in the dataset.
+        """Dynamically detect standard coordinate names in the dataset.
+
+        This private helper searches the dataset's coordinates for common
+        aliases of latitude, longitude, and vertical level dimensions and
+        returns a standardized dictionary mapping generic names to the names
+        found in the dataset. This allows other methods to remain agnostic
+        to the specific naming conventions of the input data file.
+
+        The search order is as follows:
+        - Latitude: 'latitude', 'lat'
+        - Longitude: 'longitude', 'lon'
+        - Level: 'level', 'pressure', 'isobaricInhPa', 'z'
+
         Returns
         -------
         Dict[str, str]
-            A dictionary mapping generic names ('lat', 'lon', 'level') to the
-            actual coordinate names found in the dataset.
+            A dictionary mapping generic coordinate names ('lat', 'lon', 'level')
+            to their actual names as found in the dataset's coordinates.
+            Example: {'lat': 'latitude', 'lon': 'longitude', 'level': 'pressure'}
+
         """
         coord_names = {}
         # Horizontal coordinates
