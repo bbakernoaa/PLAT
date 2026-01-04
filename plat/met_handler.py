@@ -53,6 +53,7 @@ class MetDataset:
             The local or remote path to the meteorological data file.
 
         """
+        self.file_path = file_path
         try:
             self.ds = xr.open_dataset(file_path, engine='cfgrib', chunks='auto')
         except ValueError:
@@ -60,6 +61,13 @@ class MetDataset:
             self.ds = xr.open_dataset(file_path, chunks='auto')
 
         self._normalize_variable_names()
+
+    def __repr__(self) -> str:
+        """Provide a developer-friendly string representation."""
+        header = f"MetDataset(file_path='{self.file_path}')"
+        coords = f"Coordinates: {list(self.ds.coords.keys())}"
+        variables = f"Data Variables: {list(self.ds.data_vars.keys())}"
+        return f"{header}\n  {coords}\n  {variables}"
 
     def _normalize_variable_names(self):
         """Normalize meteorological variable names to HYSPLIT standards.

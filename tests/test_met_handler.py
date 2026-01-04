@@ -115,3 +115,20 @@ def test_subset_provenance(sample_netcdf_file):
     assert 'history' in subset_ds.attrs
     # Check that the history attribute contains the subsetting information
     assert "Subsetted data" in subset_ds.attrs['history']
+
+
+def test_metdataset_repr(sample_netcdf_file):
+    """
+    Tests the __repr__ method for a clear, informative representation.
+    """
+    met_data = MetDataset(sample_netcdf_file)
+    repr_str = repr(met_data)
+
+    # Check for the file path
+    assert sample_netcdf_file in repr_str
+
+    # Check for coordinate names
+    assert "Coordinates: ['time', 'latitude', 'longitude']" in repr_str
+
+    # Check for normalized data variable names
+    assert "Data Variables: ['u', 'v', 't']" in repr_str
