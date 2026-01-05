@@ -37,28 +37,29 @@ class MetDataset:
         'z': ('z', 'HGT', 'geopotential_height'),
     }
 
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: str, chunks: Optional[Dict] = 'auto'):
         """Initialize the MetDataset.
-
         This constructor opens a meteorological data file (e.g., GRIB2, NetCDF)
         and prepares it for use. It uses Dask for lazy loading to efficiently
         handle datasets that are larger than memory. The constructor attempts
         to use the 'cfgrib' engine for GRIB2 files and falls back to the default
         engine for other formats. After opening the file, it normalizes the
         variable names.
-
         Parameters
         ----------
         file_path : str
             The local or remote path to the meteorological data file.
-
+        chunks : Optional[Dict], optional
+            A dictionary specifying the chunking strategy for Dask, by default 'auto'.
+            Example: `{'time': 24, 'latitude': 100, 'longitude': 100}`.
+            Set to `None` to disable chunking (loads data into memory).
         """
         self.file_path = file_path
         try:
-            self.ds = xr.open_dataset(file_path, engine='cfgrib', chunks='auto')
+            self.ds = xr.open_dataset(file_path, engine='cfgrib', chunks=chunks)
         except ValueError:
             # Fallback for non-GRIB formats like NetCDF
-            self.ds = xr.open_dataset(file_path, chunks='auto')
+            self.ds = xr.open_dataset(file_path, chunks=chunks)
 
         self._normalize_variable_names()
 

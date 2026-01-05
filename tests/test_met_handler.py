@@ -93,9 +93,19 @@ def test_metdataset_lazy_loading(sample_netcdf_file):
     """
     Checks if the dataset loaded by MetDataset is a Dask-backed dataset.
     """
-    met_data = MetDataset(sample_netcdf_file)
+    met_data = MetDataset(sample_netcdf_file, chunks='auto')
     # The data should be a Dask array, not a NumPy array in memory
     assert hasattr(met_data.ds['u'].data, 'dask')
+
+
+def test_metdataset_eager_loading(sample_netcdf_file):
+    """
+    Tests that passing chunks=None results in an in-memory NumPy array.
+    """
+    met_data = MetDataset(sample_netcdf_file, chunks=None)
+    # The data should be a NumPy array, not a Dask array
+    assert isinstance(met_data.ds['u'].data, np.ndarray)
+    assert not hasattr(met_data.ds['u'].data, 'dask')
 
 
 def test_subset_provenance(sample_netcdf_file):
