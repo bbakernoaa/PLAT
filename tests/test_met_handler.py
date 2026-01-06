@@ -4,6 +4,7 @@
 import os
 from datetime import datetime, timedelta
 
+import dask.array as da
 import numpy as np
 import pytest
 import xarray as xr
@@ -95,7 +96,7 @@ def test_metdataset_lazy_loading(sample_netcdf_file):
     """
     met_data = MetDataset(sample_netcdf_file, chunks='auto')
     # The data should be a Dask array, not a NumPy array in memory
-    assert hasattr(met_data.ds['u'].data, 'dask')
+    assert isinstance(met_data.ds['u'].data, da.Array)
 
 
 def test_metdataset_eager_loading(sample_netcdf_file):
