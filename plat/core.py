@@ -32,7 +32,12 @@ def _calculate_interpolation_weights_jit(
         weight for the upper grid point (w2), and the clamped lower (i1)
         and upper (i2) indices.
     """
-    # Clamp index to be within bounds
+    # Handle singleton dimensions: if the grid has only one point,
+    # interpolation is not needed. Return weights of 1.0 and 0.0.
+    if len(grid) == 1:
+        return 1.0, 0.0, 0, 0
+
+    # Clamp index to be within bounds for interpolation
     i = max(0, min(i, len(grid) - 2))
     i1, i2 = i, i + 1
 
@@ -385,6 +390,106 @@ def _integrate_jit(
     return trajectory_lat, trajectory_lon, trajectory_level, trajectory_time
 
 
+def _prepare_integration_data(
+    starting_points: Dict[str, Union[np.ndarray, list, pd.Timestamp]],
+    velocity_field: xr.Dataset,
+    num_steps: int,
+    dt: float,
+) -> tuple:
+    """Prepare data structures for the Numba integration kernel."""
+    start_lat = np.atleast_1d(starting_points['lat'])
+    start_lon = np.atleast_1d(starting_points['lon'])
+    start_level = np.atleast_1d(starting_points['level'])
+    start_time = pd.to_datetime(np.atleast_1d(starting_points['time']))
+    num_particles = len(start_lat)
+
+    # Convert timestamps to float64 (seconds since epoch) for Numba.
+    start_time_numeric = start_time.to_numpy().astype(np.int64).reshape(-1, 1) / 1e9
+    time_step_seconds = pd.Timedelta(hours=dt).total_seconds()
+
+    # Pre-allocate numpy arrays for trajectory results.
+    trajectory_lat = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
+    trajectory_lon = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
+    trajectory_level = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
+    trajectory_time = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
+
+    trajectory_lat[:, 0] = start_lat
+    trajectory_lon[:, 0] = start_lon
+    trajectory_level[:, 0] = start_level
+    trajectory_time[:, [0]] = start_time_numeric
+
+    # --- Robust "Look-Ahead" Subsetting using isel ---
+    # 1. Estimate max travel distance to create a bounding box.
+    max_u = np.abs(velocity_field['u']).max().compute()
+    max_v = np.abs(velocity_field['v']).max().compute()
+    total_time_hours = num_steps * dt
+    # Add a buffer in degrees.
+    lat_buffer = max_v * total_time_hours * 1.1
+    lon_buffer = max_u * total_time_hours * 1.1
+
+    # 2. Get coordinate arrays from the full velocity field.
+    lat_coords = velocity_field['lat'].values
+    lon_coords = velocity_field['lon'].values
+    time_coords = velocity_field['time'].values
+
+    # 3. Define the spatial and temporal bounds for the subset.
+    min_lat, max_lat = start_lat.min() - lat_buffer, start_lat.max() + lat_buffer
+    min_lon, max_lon = start_lon.min() - lon_buffer, start_lon.max() + lon_buffer
+    start_time_val = start_time.min().to_numpy()
+    end_time_val = (start_time.max() + pd.Timedelta(hours=total_time_hours)).to_numpy()
+
+    # 4. Convert coordinate bounds to integer indices for isel.
+    #    `searchsorted` finds the insertion point. We subtract 1 for the lower
+    #    bound and add 1 for the upper bound to ensure the grid cells on
+    #    either side of the trajectory's path are included for interpolation.
+    start_lat_idx = np.searchsorted(lat_coords, min_lat) - 1
+    end_lat_idx = np.searchsorted(lat_coords, max_lat) + 1
+    start_lon_idx = np.searchsorted(lon_coords, min_lon) - 1
+    end_lon_idx = np.searchsorted(lon_coords, max_lon) + 1
+    start_time_idx = np.searchsorted(time_coords, start_time_val) - 1
+    end_time_idx = np.searchsorted(time_coords, end_time_val) + 1
+
+    # 5. Clamp indices to be within the valid range of the coordinate arrays.
+    start_lat_idx = max(0, start_lat_idx)
+    end_lat_idx = min(len(lat_coords), end_lat_idx)
+    start_lon_idx = max(0, start_lon_idx)
+    end_lon_idx = min(len(lon_coords), end_lon_idx)
+    start_time_idx = max(0, start_time_idx)
+    end_time_idx = min(len(time_coords), end_time_idx)
+
+    # 6. Lazily select the subset using integer slicing.
+    velocity_subset = velocity_field.isel(
+        lat=slice(start_lat_idx, end_lat_idx),
+        lon=slice(start_lon_idx, end_lon_idx),
+        time=slice(start_time_idx, end_time_idx),
+    )
+    # 7. NOW load only the small subset into memory.
+    grid_lat = velocity_subset['lat'].values
+    grid_lon = velocity_subset['lon'].values
+    grid_level = velocity_subset['level'].values
+    grid_time = velocity_subset['time'].values.astype('datetime64[s]').astype(
+        np.float64
+    )
+    u_data = velocity_subset['u'].values
+    v_data = velocity_subset['v'].values
+    w_data = velocity_subset['w'].values
+
+    return (
+        trajectory_lat,
+        trajectory_lon,
+        trajectory_level,
+        trajectory_time,
+        grid_lat,
+        grid_lon,
+        grid_level,
+        grid_time,
+        u_data,
+        v_data,
+        w_data,
+        time_step_seconds,
+    )
+
+
 def run_trajectory(
     starting_points: Dict[str, Union[np.ndarray, list, pd.Timestamp]],
     velocity_field: xr.Dataset,
@@ -393,17 +498,30 @@ def run_trajectory(
 ) -> xr.Dataset:
     """
     Simulate multiple particle trajectories through a 4D velocity field.
-    This function integrates particle positions using the Runge-Kutta 4th
-    order (RK4) method. The core integration loop is JIT-compiled with Numba
-    and parallelized to handle multiple particles efficiently.
+    This function is the main entry point for running the trajectory model.
+    It orchestrates the three main steps:
+    1.  **Prepare Data**: It calls a helper function to perform "look-ahead"
+        subsetting of the `velocity_field`. This is a critical performance
+        optimization that estimates the maximum possible travel distance and
+        carves out a small spatial and temporal chunk from the (potentially
+        very large) input dataset. This avoids loading the entire dataset
+        into memory.
+    2.  **JIT Integration**: The small data chunk is then passed to a
+        high-performance, Numba JIT-compiled kernel that uses the Runge-Kutta
+        4th order (RK4) method to integrate the particle positions.
+    3.  **Package Results**: The raw trajectory arrays (lat, lon, level) are
+        packaged back into a user-friendly `xarray.Dataset`, complete with
+        coordinate information and updated metadata.
     Parameters
     ----------
     starting_points : Dict[str, Union[np.ndarray, list, pd.Timestamp]]
         A dictionary defining the initial positions of the particles.
-        Must contain 'lat', 'lon', 'level', and 'time' keys.
+        Must contain 'lat', 'lon', 'level', and 'time' keys. Their values
+        can be single values or lists/arrays for multiple particles.
     velocity_field : xr.Dataset
-        An xarray Dataset containing the velocity components 'u', 'v', and 'w'.
-        The dataset must have 'lat', 'lon', 'level', and 'time' as coordinates.
+        An xarray Dataset containing the 4D velocity components 'u', 'v',
+        and 'w' (time, level, lat, lon). This dataset is expected to be
+        Dask-backed for lazy loading.
     num_steps : int
         The number of integration steps to perform.
     dt : float, optional
@@ -412,7 +530,8 @@ def run_trajectory(
     -------
     xr.Dataset
         A new xarray Dataset containing the trajectories of the particles.
-        The dataset will have 'time' and 'particle' coordinates.
+        The dataset will have 'time' and 'particle' coordinates and 'lat',
+        'lon', and 'level' as data variables.
     Examples
     --------
     >>> import numpy as np
@@ -460,38 +579,25 @@ def run_trajectory(
     Attributes:
         history:  4D particle trajectory calculated for 2 particles using RK4 integ...
     """
-    # --- Prepare data for Numba kernel ---
-    start_lat = np.atleast_1d(starting_points['lat'])
-    start_lon = np.atleast_1d(starting_points['lon'])
-    start_level = np.atleast_1d(starting_points['level'])
-    start_time = pd.to_datetime(np.atleast_1d(starting_points['time']))
-    num_particles = len(start_lat)
+    # --- 1. Prepare data for Numba kernel ---
+    (
+        trajectory_lat,
+        trajectory_lon,
+        trajectory_level,
+        trajectory_time,
+        grid_lat,
+        grid_lon,
+        grid_level,
+        grid_time,
+        u_data,
+        v_data,
+        w_data,
+        time_step_seconds,
+    ) = _prepare_integration_data(
+        starting_points, velocity_field, num_steps, dt
+    )
 
-    # Convert timestamps to float64 for Numba compatibility
-    start_time_numeric = start_time.astype(np.int64) / 1e9
-    time_step_seconds = pd.Timedelta(hours=dt).total_seconds()
-
-    # Pre-allocate numpy arrays for performance
-    trajectory_lat = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
-    trajectory_lon = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
-    trajectory_level = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
-    trajectory_time = np.zeros((num_particles, num_steps + 1), dtype=np.float64)
-
-    trajectory_lat[:, 0] = start_lat
-    trajectory_lon[:, 0] = start_lon
-    trajectory_level[:, 0] = start_level
-    trajectory_time[:, 0] = start_time_numeric
-
-    # Extract NumPy arrays from the velocity field for the JIT function.
-    grid_lat = velocity_field['lat'].values
-    grid_lon = velocity_field['lon'].values
-    grid_level = velocity_field['level'].values
-    grid_time = velocity_field['time'].values.astype('datetime64[s]').astype(np.float64)
-    u_data = velocity_field['u'].values
-    v_data = velocity_field['v'].values
-    w_data = velocity_field['w'].values
-
-    # --- Run the JIT-compiled integration ---
+    # --- 2. Run the JIT-compiled integration ---
     traj_lat, traj_lon, traj_level, traj_time = _integrate_jit(
         trajectory_lat,
         trajectory_lon,
@@ -508,23 +614,27 @@ def run_trajectory(
         time_step_seconds,
     )
 
-    # --- Package the results into an xarray Dataset ---
-    # The time coordinate is the same for all particles, so we can take the first row.
-    time_coords = pd.to_datetime(traj_time[0, :], unit='s')
+    # --- 3. Package the results into an xarray Dataset ---
+    num_particles = traj_lat.shape[0]
+    # `pd.to_datetime` expects a 1D array, so we flatten and then reshape.
+    time_coords = pd.to_datetime(traj_time.flatten(), unit='s').to_numpy()
+    time_coords = time_coords.reshape(traj_time.shape)
 
     trajectory_ds = xr.Dataset(
         {
-            'lat': (('particle', 'time'), traj_lat),
-            'lon': (('particle', 'time'), traj_lon),
-            'level': (('particle', 'time'), traj_level),
+            'lat': (('particle', 'step'), traj_lat),
+            'lon': (('particle', 'step'), traj_lon),
+            'level': (('particle', 'step'), traj_level),
         },
         coords={
             'particle': range(num_particles),
-            'time': time_coords,
+            'step': range(num_steps + 1),
+            'time': (('particle', 'step'), time_coords),
         },
     )
 
-    # --- Scientific Hygiene: Update Attributes ---
+    # --- 4. Scientific Hygiene: Update Attributes ---
+    num_particles = trajectory_lat.shape[0]
     history_log = (
         f"4D particle trajectory calculated for {num_particles} particles using RK4 "
         f"integration with {num_steps} steps and dt={dt} hours."
