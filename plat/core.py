@@ -1,7 +1,7 @@
 
 """Core atmospheric trajectory model."""
 
-from typing import Dict, Union
+from typing import Dict, Tuple, Union
 
 import numba
 import numpy as np
@@ -225,45 +225,50 @@ def _rk4_step_jit(
     grid_time: np.ndarray,
     u_data: np.ndarray,
     v_data: np.ndarray,
-    w_data: np.ndarray,
+    w_data: "np.ndarray",
     dt_seconds: float,
-) -> tuple[float, float, float]:
+) -> "tuple[float, float, float]":
     """
-    Perform a single Runge-Kutta 4th order (RK4) integration step in 4D.
+    Perform a single Runge-Kutta 4th order (RK4) integration step.
 
-    This function is JIT-compiled with Numba for performance.
+    This function calculates the next position of a particle in a 4D velocity
+    field (lat, lon, level, time) using the RK4 method. It is JIT-compiled
+    with Numba for high performance. The function accounts for the conversion
+    of time step from seconds to hours for velocity calculations.
 
     Parameters
     ----------
     lat : float
-        The current latitude of the particle.
+        The current latitude of the particle (in degrees).
     lon : float
-        The current longitude of the particle.
+        The current longitude of the particle (in degrees).
     level : float
-        The current vertical level of the particle.
+        The current vertical level of the particle (e.g., in hPa).
     time : float
-        The current time of the particle.
+        The current time of the particle (as seconds since epoch).
     grid_lat : np.ndarray
-        The latitude coordinates of the velocity field grid.
+        A 1D array of latitude coordinates for the grid.
     grid_lon : np.ndarray
-        The longitude coordinates of the velocity field grid.
+        A 1D array of longitude coordinates for the grid.
     grid_level : np.ndarray
-        The vertical level coordinates of the velocity field grid.
+        A 1D array of vertical level coordinates for the grid.
     grid_time : np.ndarray
-        The time coordinates of the velocity field grid.
+        A 1D array of time coordinates for the grid (as seconds since epoch).
     u_data : np.ndarray
-        A 4D array of the 'u' velocity component.
+        A 4D array of the zonal (u) velocity component, with dimensions
+        corresponding to (time, level, lat, lon).
     v_data : np.ndarray
-        A 4D array of the 'v' velocity component.
+        A 4D array of the meridional (v) velocity component.
     w_data : np.ndarray
-        A 4D array of the 'w' velocity component.
+        A 4D array of the vertical (w) velocity component.
     dt_seconds : float
         The time step for the integration in seconds.
 
     Returns
     -------
     tuple[float, float, float]
-        A tuple containing the new latitude, longitude, and level.
+        A tuple containing the new latitude, longitude, and vertical level
+        of the particle after one RK4 step.
     """
     dt_hours = dt_seconds / 3600.0
     # --- RK4 k1 ---
@@ -395,8 +400,56 @@ def _prepare_integration_data(
     velocity_field: xr.Dataset,
     num_steps: int,
     dt: float,
-) -> tuple:
-    """Prepare data structures for the Numba integration kernel."""
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    float,
+]:
+    """
+    Prepare data structures for the Numba integration kernel.
+
+    This function orchestrates several critical pre-processing steps:
+    1.  **Data Extraction**: It extracts starting coordinates and times from
+        the input dictionary and ensures they are NumPy arrays.
+    2.  **Time Conversion**: It converts pandas Timestamps into a numeric
+        format (seconds since epoch) suitable for Numba's JIT compiler.
+    3.  **Array Allocation**: It pre-allocates NumPy arrays with the correct
+        size and dtype to store the trajectory results.
+    4.  **Look-Ahead Subsetting**: It performs a lazy, index-based subsetting
+        of the Dask-backed `velocity_field`. This is a key performance
+        optimization that estimates the maximum possible travel distance,
+        defines a bounding box, and loads only that small chunk of data
+        into memory.
+
+    Parameters
+    ----------
+    starting_points : Dict[str, Union[np.ndarray, list, pd.Timestamp]]
+        A dictionary with 'lat', 'lon', 'level', and 'time' keys.
+    velocity_field : xr.Dataset
+        A Dask-backed xarray Dataset containing 'u', 'v', 'w' velocity fields.
+    num_steps : int
+        The number of integration steps.
+    dt : float
+        The time step in hours.
+
+    Returns
+    -------
+    Tuple[ np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, float, ]
+        A tuple containing all the necessary NumPy arrays and scalars for the
+        JIT integration, including trajectory arrays, grid coordinates,
+        velocity data, and the time step in seconds.
+    """
     start_lat = np.atleast_1d(starting_points['lat'])
     start_lon = np.atleast_1d(starting_points['lon'])
     start_level = np.atleast_1d(starting_points['level'])
