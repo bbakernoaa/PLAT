@@ -144,6 +144,15 @@ def test_metdataset_repr(sample_netcdf_file):
     # Check for normalized data variable names
     assert "Data Variables: ['u', 'v', 't']" in repr_str
 
+def test_init_provenance(sample_netcdf_file):
+    """
+    Tests that the __init__ method adds a history attribute for provenance.
+    """
+    met_data = MetDataset(sample_netcdf_file)
+    assert 'history' in met_data.ds.attrs
+    assert "Opened file" in met_data.ds.attrs['history']
+
+
 def test_get_coord_names_variants(sample_netcdf_file):
     """
     Tests that _get_coord_names correctly identifies various coordinate aliases.
@@ -151,44 +160,30 @@ def test_get_coord_names_variants(sample_netcdf_file):
     # Instantiate MetDataset, we'll overwrite the ds attribute for testing
     met_data = MetDataset(sample_netcdf_file)
 
-    # --- Test Case 1: 'lat', 'lon', 'pressure' ---
-    ds_variant1 = xr.Dataset(
-        coords={
-            'time': [datetime(2023, 1, 1)],
-            'lat': [40.0],
-            'lon': [-120.0],
-            'pressure': [1000.0],
-        }
-    )
-    met_data.ds = ds_variant1
-    coord_names1 = met_data._get_coord_names()
-    expected1 = {'lat': 'lat', 'lon': 'lon', 'level': 'pressure'}
-    assert coord_names1 == expected1
+    # Define test cases as a list of tuples: (coords, expected_mapping)
+    test_cases = [
+        (
+            {'lat': [40.0], 'lon': [-120.0], 'pressure': [1000.0]},
+            {'lat': 'lat', 'lon': 'lon', 'level': 'pressure'},
+        ),
+        (
+            {'latitude': [40.0], 'longitude': [-120.0], 'isobaricInhPa': [850.0]},
+            {'lat': 'latitude', 'lon': 'longitude', 'level': 'isobaricInhPa'},
+        ),
+        (
+            {'lat': [40.0], 'lon': [-120.0], 'z': [500.0]},
+            {'lat': 'lat', 'lon': 'lon', 'level': 'z'},
+        ),
+        # New test case to prove robustness with a previously unsupported alias
+        (
+            {'latitude': [40.0], 'lon': [-110.0], 'isobaric': [700.0]},
+            {'lat': 'latitude', 'lon': 'lon', 'level': 'isobaric'},
+        ),
+    ]
 
-    # --- Test Case 2: 'latitude', 'longitude', 'isobaricInhPa' ---
-    ds_variant2 = xr.Dataset(
-        coords={
-            'time': [datetime(2023, 1, 1)],
-            'latitude': [40.0],
-            'longitude': [-120.0],
-            'isobaricInhPa': [850.0],
-        }
-    )
-    met_data.ds = ds_variant2
-    coord_names2 = met_data._get_coord_names()
-    expected2 = {'lat': 'latitude', 'lon': 'longitude', 'level': 'isobaricInhPa'}
-    assert coord_names2 == expected2
-
-    # --- Test Case 3: 'z' as vertical coordinate ---
-    ds_variant3 = xr.Dataset(
-        coords={
-            'time': [datetime(2023, 1, 1)],
-            'lat': [40.0],
-            'lon': [-120.0],
-            'z': [500.0],
-        }
-    )
-    met_data.ds = ds_variant3
-    coord_names3 = met_data._get_coord_names()
-    expected3 = {'lat': 'lat', 'lon': 'lon', 'level': 'z'}
-    assert coord_names3 == expected3
+    for coords, expected in test_cases:
+        coords['time'] = [datetime(2023, 1, 1)]  # Add time coord for consistency
+        ds_variant = xr.Dataset(coords=coords)
+        met_data.ds = ds_variant
+        coord_names = met_data._get_coord_names()
+        assert coord_names == expected

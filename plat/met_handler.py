@@ -5,6 +5,7 @@ This module provides the MetDataset class, which is responsible for ingesting,
  normalizing, and subsetting meteorological data from NetCDF or GRIB2 files.
 """
 
+from datetime import datetime
 from typing import Dict, Optional, Tuple
 
 import xarray as xr
@@ -37,6 +38,12 @@ class MetDataset:
         'z': ('z', 'HGT', 'geopotential_height'),
     }
 
+    COORD_MAP: Dict[str, Tuple[str, ...]] = {
+    'lat': ('latitude', 'lat'),
+    'lon': ('longitude', 'lon'),
+    'level': ('level', 'pressure', 'isobaricInhPa', 'z', 'isobaric'),
+    }
+
     def __init__(self, file_path: str, chunks: Optional[Dict] = 'auto'):
         """Initialize the MetDataset.
         This constructor opens a meteorological data file (e.g., GRIB2, NetCDF)
@@ -60,6 +67,10 @@ class MetDataset:
         except ValueError:
             # Fallback for non-GRIB formats like NetCDF
             self.ds = xr.open_dataset(file_path, chunks=chunks)
+
+        # --- Scientific Hygiene: Update Attributes ---
+        timestamp = datetime.utcnow().isoformat()
+        self.ds.attrs['history'] = f"[{timestamp}] Opened file: {file_path}"
 
         self._normalize_variable_names()
 
@@ -96,11 +107,6 @@ class MetDataset:
         found in the dataset. This allows other methods to remain agnostic
         to the specific naming conventions of the input data file.
 
-        The search order is as follows:
-        - Latitude: 'latitude', 'lat'
-        - Longitude: 'longitude', 'lon'
-        - Level: 'level', 'pressure', 'isobaricInhPa', 'z'
-
         Returns
         -------
         Dict[str, str]
@@ -110,20 +116,11 @@ class MetDataset:
 
         """
         coord_names = {}
-        # Horizontal coordinates
-        if 'latitude' in self.ds.coords:
-            coord_names['lat'] = 'latitude'
-        elif 'lat' in self.ds.coords:
-            coord_names['lat'] = 'lat'
-        if 'longitude' in self.ds.coords:
-            coord_names['lon'] = 'longitude'
-        elif 'lon' in self.ds.coords:
-            coord_names['lon'] = 'lon'
-        # Vertical coordinates
-        for z_name in ('level', 'pressure', 'isobaricInhPa', 'z'):
-            if z_name in self.ds.coords:
-                coord_names['level'] = z_name
-                break
+        for std_name, aliases in self.COORD_MAP.items():
+            for alias in aliases:
+                if alias in self.ds.coords:
+                    coord_names[std_name] = alias
+                    break
         return coord_names
 
     def subset(
