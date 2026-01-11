@@ -1,7 +1,7 @@
 
 """Core atmospheric trajectory model."""
 
-from typing import Dict, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import numba
 import numpy as np
@@ -12,9 +12,12 @@ import xarray as xr
 @numba.jit(nopython=True)
 def _calculate_interpolation_weights_jit(
     point: float, grid: np.ndarray, i: int
-) -> tuple[float, float, int, int]:
+) -> Tuple[float, float, int, int]:
     """
     Calculate interpolation weights and clamp indices for a single dimension.
+
+    This is a Numba JIT-compiled helper function for performance. It handles
+    the edge case of a singleton dimension and avoids division by zero.
 
     Parameters
     ----------
@@ -27,10 +30,12 @@ def _calculate_interpolation_weights_jit(
 
     Returns
     -------
-    tuple[float, float, int, int]
-        A tuple containing the weight for the lower grid point (w1), the
-        weight for the upper grid point (w2), and the clamped lower (i1)
-        and upper (i2) indices.
+    Tuple[float, float, int, int]
+        A tuple containing:
+        - w1 (float): The weight for the lower grid point.
+        - w2 (float): The weight for the upper grid point.
+        - i1 (int): The clamped lower index.
+        - i2 (int): The clamped upper index.
     """
     # Handle singleton dimensions: if the grid has only one point,
     # interpolation is not needed. Return weights of 1.0 and 0.0.
@@ -70,7 +75,9 @@ def _quadrilinear_interpolation_jit(
     """
     Perform quadrilinear interpolation on a 4D grid.
 
-    This function is JIT-compiled with Numba for performance.
+    This function is JIT-compiled with Numba for performance. It interpolates
+    a value from a 4D data array (e.g., u-component of velocity) at a
+    specific point in space and time.
 
     Parameters
     ----------
@@ -81,7 +88,7 @@ def _quadrilinear_interpolation_jit(
     level : float
         Vertical level of the interpolation point.
     time : float
-        Time of the interpolation point.
+        Time of the interpolation point (in seconds since epoch).
     grid_lat : np.ndarray
         A 1D array of latitude coordinates for the grid.
     grid_lon : np.ndarray
@@ -89,7 +96,7 @@ def _quadrilinear_interpolation_jit(
     grid_level : np.ndarray
         A 1D array of vertical level coordinates for the grid.
     grid_time : np.ndarray
-        A 1D array of time coordinates for the grid.
+        A 1D array of time coordinates for the grid (in seconds since epoch).
     data : np.ndarray
         A 4D array of data values corresponding to the grid. The expected
         dimension order is (time, level, lat, lon).
@@ -97,7 +104,7 @@ def _quadrilinear_interpolation_jit(
     Returns
     -------
     float
-        The interpolated value at the given lat/lon/level/time point.
+        The interpolated value at the given point.
     """
     # Find lower-bound indices
     i = np.searchsorted(grid_lat, lat) - 1
@@ -171,7 +178,8 @@ def _bilinear_interpolation_jit(
     """
     Perform bilinear interpolation on a 2D grid.
 
-    This function is JIT-compiled with Numba for performance.
+    This function is JIT-compiled with Numba for performance. It is a simpler
+    case of the quadrilinear interpolation, used for 2D fields.
 
     Parameters
     ----------
@@ -189,7 +197,7 @@ def _bilinear_interpolation_jit(
     Returns
     -------
     float
-        The interpolated value at the given lat/lon point.
+        The interpolated value at the given point.
     """
     # Find lower-bound indices for lat and lon
     i = np.searchsorted(grid_lat, lat) - 1
@@ -225,16 +233,16 @@ def _rk4_step_jit(
     grid_time: np.ndarray,
     u_data: np.ndarray,
     v_data: np.ndarray,
-    w_data: "np.ndarray",
+    w_data: np.ndarray,
     dt_seconds: float,
-) -> "tuple[float, float, float]":
+) -> Tuple[float, float, float]:
     """
     Perform a single Runge-Kutta 4th order (RK4) integration step.
 
     This function calculates the next position of a particle in a 4D velocity
-    field (lat, lon, level, time) using the RK4 method. It is JIT-compiled
-    with Numba for high performance. The function accounts for the conversion
-    of time step from seconds to hours for velocity calculations.
+    field using the RK4 method. It is JIT-compiled with Numba for high
+    performance. The function accounts for the conversion of the time step
+    from seconds to hours for velocity calculations.
 
     Parameters
     ----------
@@ -255,8 +263,7 @@ def _rk4_step_jit(
     grid_time : np.ndarray
         A 1D array of time coordinates for the grid (as seconds since epoch).
     u_data : np.ndarray
-        A 4D array of the zonal (u) velocity component, with dimensions
-        corresponding to (time, level, lat, lon).
+        A 4D array of the zonal (u) velocity component.
     v_data : np.ndarray
         A 4D array of the meridional (v) velocity component.
     w_data : np.ndarray
@@ -266,9 +273,8 @@ def _rk4_step_jit(
 
     Returns
     -------
-    tuple[float, float, float]
-        A tuple containing the new latitude, longitude, and vertical level
-        of the particle after one RK4 step.
+    Tuple[float, float, float]
+        A tuple containing the new latitude, longitude, and vertical level.
     """
     dt_hours = dt_seconds / 3600.0
     # --- RK4 k1 ---
@@ -330,31 +336,33 @@ def _integrate_jit(
     w_data: np.ndarray,
     num_steps: int,
     dt_seconds: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Perform the core trajectory integration using a Numba JIT-compiled loop.
+
     This function is designed for performance-critical computation and operates
     exclusively on NumPy arrays. It uses the Runge-Kutta 4th order (RK4)
-    method for improved physical accuracy. The outer loop over particles is
-    parallelized.
+    method for physical accuracy. The outer loop over particles is
+    parallelized with `numba.prange`.
+
     Parameters
     ----------
     trajectory_lat : np.ndarray
-        A 2D array (particle, time) to be filled with particle latitudes.
+        A 2D array `(particle, step)` to be filled with particle latitudes.
     trajectory_lon : np.ndarray
-        A 2D array (particle, time) to be filled with particle longitudes.
+        A 2D array `(particle, step)` to be filled with particle longitudes.
     trajectory_level : np.ndarray
-        A 2D array (particle, time) to be filled with particle vertical levels.
+        A 2D array `(particle, step)` to be filled with particle levels.
     trajectory_time : np.ndarray
-        A 2D array (particle, time) to be filled with particle times.
+        A 2D array `(particle, step)` to be filled with particle times.
     grid_lat : np.ndarray
-        The latitude coordinates of the velocity field grid.
+        The 1D latitude coordinates of the velocity field grid.
     grid_lon : np.ndarray
-        The longitude coordinates of the velocity field grid.
+        The 1D longitude coordinates of the velocity field grid.
     grid_level : np.ndarray
-        The vertical level coordinates of the velocity field grid.
+        The 1D vertical level coordinates of the velocity field grid.
     grid_time : np.ndarray
-        The time coordinates of the velocity field grid.
+        The 1D time coordinates of the velocity field grid.
     u_data : np.ndarray
         A 4D array of the 'u' velocity component.
     v_data : np.ndarray
@@ -365,10 +373,12 @@ def _integrate_jit(
         The number of integration steps to perform.
     dt_seconds : float
         The time step for the integration in seconds.
+
     Returns
     -------
-    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-        A tuple containing the populated trajectory arrays for lat, lon, level, and time.
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        A tuple containing the populated trajectory arrays for lat, lon,
+        level, and time.
     """
     num_particles = trajectory_lat.shape[0]
     for p in numba.prange(num_particles):  # Parallel loop over particles
@@ -396,7 +406,7 @@ def _integrate_jit(
 
 
 def _prepare_integration_data(
-    starting_points: Dict[str, Union[np.ndarray, list, pd.Timestamp]],
+    starting_points: Dict[str, Union[np.ndarray, List[float], pd.Timestamp]],
     velocity_field: xr.Dataset,
     num_steps: int,
     dt: float,
@@ -418,21 +428,17 @@ def _prepare_integration_data(
     Prepare data structures for the Numba integration kernel.
 
     This function orchestrates several critical pre-processing steps:
-    1.  **Data Extraction**: It extracts starting coordinates and times from
-        the input dictionary and ensures they are NumPy arrays.
-    2.  **Time Conversion**: It converts pandas Timestamps into a numeric
-        format (seconds since epoch) suitable for Numba's JIT compiler.
-    3.  **Array Allocation**: It pre-allocates NumPy arrays with the correct
-        size and dtype to store the trajectory results.
-    4.  **Look-Ahead Subsetting**: It performs a lazy, index-based subsetting
+    1.  **Data Extraction**: Extracts starting coordinates and times.
+    2.  **Time Conversion**: Converts pandas Timestamps to seconds since epoch.
+    3.  **Array Allocation**: Pre-allocates NumPy arrays for trajectory results.
+    4.  **Look-Ahead Subsetting**: Performs a lazy, index-based subsetting
         of the Dask-backed `velocity_field`. This is a key performance
         optimization that estimates the maximum possible travel distance,
-        defines a bounding box, and loads only that small chunk of data
-        into memory.
+        defines a bounding box, and loads only that small chunk into memory.
 
     Parameters
     ----------
-    starting_points : Dict[str, Union[np.ndarray, list, pd.Timestamp]]
+    starting_points : Dict[str, Union[np.ndarray, List[float], pd.Timestamp]]
         A dictionary with 'lat', 'lon', 'level', and 'time' keys.
     velocity_field : xr.Dataset
         A Dask-backed xarray Dataset containing 'u', 'v', 'w' velocity fields.
@@ -443,9 +449,7 @@ def _prepare_integration_data(
 
     Returns
     -------
-    Tuple[ np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-    np.ndarray, float, ]
+    Tuple[np.ndarray, ..., float]
         A tuple containing all the necessary NumPy arrays and scalars for the
         JIT integration, including trajectory arrays, grid coordinates,
         velocity data, and the time step in seconds.
@@ -544,47 +548,46 @@ def _prepare_integration_data(
 
 
 def run_trajectory(
-    starting_points: Dict[str, Union[np.ndarray, list, pd.Timestamp]],
+    starting_points: Dict[str, Union[np.ndarray, List[float], pd.Timestamp]],
     velocity_field: xr.Dataset,
     num_steps: int,
     dt: float = 1.0,
 ) -> xr.Dataset:
     """
     Simulate multiple particle trajectories through a 4D velocity field.
+
     This function is the main entry point for running the trajectory model.
-    It orchestrates the three main steps:
-    1.  **Prepare Data**: It calls a helper function to perform "look-ahead"
-        subsetting of the `velocity_field`. This is a critical performance
-        optimization that estimates the maximum possible travel distance and
-        carves out a small spatial and temporal chunk from the (potentially
-        very large) input dataset. This avoids loading the entire dataset
-        into memory.
-    2.  **JIT Integration**: The small data chunk is then passed to a
-        high-performance, Numba JIT-compiled kernel that uses the Runge-Kutta
-        4th order (RK4) method to integrate the particle positions.
-    3.  **Package Results**: The raw trajectory arrays (lat, lon, level) are
-        packaged back into a user-friendly `xarray.Dataset`, complete with
-        coordinate information and updated metadata.
+    It orchestrates three main steps:
+    1.  **Prepare Data**: Performs "look-ahead" subsetting of the velocity
+        field to load a minimal amount of data into memory.
+    2.  **JIT Integration**: Passes the subsetted data to a high-performance,
+        Numba JIT-compiled kernel that uses the Runge-Kutta 4th order (RK4)
+        method to integrate particle positions.
+    3.  **Package Results**: Packages the raw trajectory arrays into a
+        user-friendly `xarray.Dataset` with updated metadata.
+
     Parameters
     ----------
-    starting_points : Dict[str, Union[np.ndarray, list, pd.Timestamp]]
-        A dictionary defining the initial positions of the particles.
-        Must contain 'lat', 'lon', 'level', and 'time' keys. Their values
-        can be single values or lists/arrays for multiple particles.
+    starting_points : Dict[str, Union[np.ndarray, List[float], pd.Timestamp]]
+        A dictionary defining the initial positions of particles. Must contain
+        'lat', 'lon', 'level', and 'time' keys. Values can be single values
+        or lists/arrays for multiple particles.
     velocity_field : xr.Dataset
         An xarray Dataset containing the 4D velocity components 'u', 'v',
-        and 'w' (time, level, lat, lon). This dataset is expected to be
-        Dask-backed for lazy loading.
+        and 'w' (`time`, `level`, `lat`, `lon`). This dataset is expected
+        to be Dask-backed for lazy loading.
     num_steps : int
         The number of integration steps to perform.
     dt : float, optional
         The time step for the integration in hours (default is 1.0).
+
     Returns
     -------
     xr.Dataset
-        A new xarray Dataset containing the trajectories of the particles.
-        The dataset will have 'time' and 'particle' coordinates and 'lat',
-        'lon', and 'level' as data variables.
+        A Dataset containing the trajectories. It includes `lat`, `lon`, and
+        `level` as data variables, with `particle` and `step` dimensions,
+        and a `time` data variable (`particle`, `step`) corresponding to the
+        positional data.
     Examples
     --------
     >>> import numpy as np
