@@ -5,7 +5,7 @@ This module provides the MetDataset class, which is responsible for ingesting,
 normalizing, and subsetting meteorological data from NetCDF or GRIB2 files.
 """
 
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple, Union
 
 import xarray as xr
@@ -80,7 +80,7 @@ class MetDataset:
             self.ds = xr.open_dataset(file_path, chunks=chunks)
 
         # --- Scientific Hygiene: Update Attributes ---
-        timestamp: str = datetime.now(UTC).isoformat()
+        timestamp: str = datetime.now(timezone.utc).isoformat()
         self.ds.attrs['history'] = f"[{timestamp}] Opened file: {file_path}"
 
         self._normalize_names()
@@ -176,7 +176,7 @@ class MetDataset:
         subset_ds: xr.Dataset = self.ds.sel(**slicers)
 
         # --- Scientific Hygiene: Update Attributes ---
-        timestamp: str = datetime.now(UTC).isoformat()
+        timestamp: str = datetime.now(timezone.utc).isoformat()
         history_log = (
             f"[{timestamp}] Subsetted data to time_range={time_range}, "
             f"lat_bounds={lat_bounds}, lon_bounds={lon_bounds}"
