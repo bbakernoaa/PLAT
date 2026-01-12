@@ -48,7 +48,7 @@ def zero_velocity_field() -> xr.Dataset:
     lat = np.arange(-90, 91, 10)
     lon = np.arange(-180, 181, 20)
     level = np.array([1000, 850, 500])
-    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00'])
+    time = pd.to_datetime(pd.date_range('2023-01-01', periods=12, freq='h'))
     u = np.zeros((len(time), len(level), len(lat), len(lon)))
     v = np.zeros((len(time), len(level), len(lat), len(lon)))
     w = np.zeros((len(time), len(level), len(lat), len(lon)))
@@ -68,7 +68,7 @@ def constant_velocity_field() -> xr.Dataset:
     lat = np.arange(-90, 91, 10)
     lon = np.arange(-180, 181, 20)
     level = np.array([1000, 850, 500])
-    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00'])
+    time = pd.to_datetime(pd.date_range('2023-01-01', periods=12, freq='h'))
     u = np.ones((len(time), len(level), len(lat), len(lon)))
     v = np.ones((len(time), len(level), len(lat), len(lon)))
     w = np.zeros((len(time), len(level), len(lat), len(lon)))  # No vertical motion
@@ -265,7 +265,7 @@ def constant_vertical_velocity_field() -> xr.Dataset:
     lat = np.arange(30, 41, 1)
     lon = np.arange(-110, -99, 1)
     level = np.arange(1000, 400, -100)
-    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00'])
+    time = pd.to_datetime(pd.date_range('2023-01-01', periods=12, freq='h'))
     u = np.zeros((len(time), len(level), len(lat), len(lon)))
     v = np.zeros((len(time), len(level), len(lat), len(lon)))
     w = np.full((len(time), len(level), len(lat), len(lon)), -50.0)  # Constant decent
@@ -336,20 +336,62 @@ def test_run_trajectory_multiple_particles(constant_velocity_field):
     assert np.isclose(final_point_p2['lon'], expected_lon_p2)
 
 
+def test_run_trajectory_out_of_bounds(constant_velocity_field):
+    """
+    Test that a particle exiting the domain has its trajectory terminated.
+    """
+    # Start a particle near the edge of the domain with a velocity pointing
+    # outwards.
+    start = {
+        'lat': [85.0],  # Near the 90N boundary
+        'lon': [175.0],  # Near the 180E boundary
+        'level': [850.0],
+        'time': pd.Timestamp('2023-01-01T00:00:00'),
+    }
+    # With u=1 and v=1, the particle will cross the northern boundary
+    # after 5 steps and the eastern boundary after 5 steps.
+    num_steps = 10
+    trajectory = run_trajectory(
+        start, constant_velocity_field, num_steps, dt=1.0
+    )
+
+    # Find the first occurrence of NaN in the latitude array
+    nan_mask = np.isnan(trajectory['lat'].values.squeeze())
+    first_nan_step = np.argmax(nan_mask) if np.any(nan_mask) else -1
+
+    # --- Assertions ---
+    # 1. The simulation should have run to completion, producing NaNs,
+    #    not raising an IndexError. A `first_nan_step > 0` proves this.
+    assert first_nan_step > 0
+
+    # 2. Check that the step *before* the first NaN is the first point that
+    #    is out of bounds.
+    first_out_of_bounds_point = trajectory.isel(
+        particle=0, step=first_nan_step - 1
+    )
+    # The particle should have crossed the northern boundary in this case.
+    assert first_out_of_bounds_point['lat'] > 90.0
+
+    # 3. All steps from `first_nan_step` onwards should be NaN.
+    assert np.all(np.isnan(trajectory['lat'].isel(particle=0, step=slice(first_nan_step, None))))
+    assert np.all(np.isnan(trajectory['lon'].isel(particle=0, step=slice(first_nan_step, None))))
+    assert np.all(np.isnan(trajectory['level'].isel(particle=0, step=slice(first_nan_step, None))))
+
+
 @pytest.fixture
 def time_varying_velocity_field() -> xr.Dataset:
     """Create a 4D velocity field where u increases with time."""
     lat = np.array([30, 40])
     lon = np.array([-120, -110])
     level = np.array([800])
-    time = pd.to_datetime(['2023-01-01T00:00:00', '2023-01-01T01:00:00', '2023-01-01T02:00:00'])
+    time = pd.to_datetime(pd.date_range('2023-01-01', periods=12, freq='h'))
 
-    # At T0, u is 1.0 everywhere. At T1, u is 2.0. At T2, u is 3.0
-    u_t0 = np.ones((len(level), len(lat), len(lon)))
-    u_t1 = np.full((len(level), len(lat), len(lon)), 2.0)
-    u_t2 = np.full((len(level), len(lat), len(lon)), 3.0)
-    u = np.stack([u_t0, u_t1, u_t2])
-
+    # u increases with time
+    u_list = [
+        np.full((len(level), len(lat), len(lon)), i + 1.0)
+        for i in range(len(time))
+    ]
+    u = np.stack(u_list)
     v = np.zeros_like(u)
     w = np.zeros_like(u)
 
@@ -407,7 +449,7 @@ def test_run_trajectory_lazy_subsetting(mock_integrate_jit):
     lat = np.linspace(0, 90, 100)
     lon = np.linspace(-180, 180, 100)
     level = np.linspace(1000, 100, 100)
-    time = pd.to_datetime(pd.date_range('2023-01-01', periods=10, freq='1H'))
+    time = pd.to_datetime(pd.date_range('2023-01-01', periods=10, freq='h'))
 
     # Create a dummy velocity field of all ones
     ds = xr.Dataset(
@@ -470,7 +512,7 @@ def test_run_trajectory_multiple_start_times(constant_velocity_field):
     different times.
     """
     # Use a velocity field with more time slices to test the selection
-    time_coords = pd.to_datetime(pd.date_range('2023-01-01', periods=5, freq='1H'))
+    time_coords = pd.to_datetime(pd.date_range('2023-01-01', periods=5, freq='h'))
     vel_field = constant_velocity_field.reindex({'time': time_coords}, method='pad')
 
     start_points = {
