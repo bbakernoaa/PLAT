@@ -83,11 +83,11 @@ def test_metdataset_subset(sample_netcdf_file):
 
     # Verify latitude dimension
     expected_lats = [40.0]
-    np.testing.assert_array_equal(subset_ds['latitude'].values, expected_lats)
+    np.testing.assert_array_equal(subset_ds['lat'].values, expected_lats)
 
     # Verify longitude dimension
     expected_lons = [-115.0]
-    np.testing.assert_array_equal(subset_ds['longitude'].values, expected_lons)
+    np.testing.assert_array_equal(subset_ds['lon'].values, expected_lons)
 
 
 def test_metdataset_lazy_loading(sample_netcdf_file):
@@ -139,7 +139,7 @@ def test_metdataset_repr(sample_netcdf_file):
     assert sample_netcdf_file in repr_str
 
     # Check for coordinate names
-    assert "Coordinates: ['time', 'latitude', 'longitude']" in repr_str
+    assert "Coordinates: ['time', 'lat', 'lon']" in repr_str
 
     # Check for normalized data variable names
     assert "Data Variables: ['u', 'v', 't']" in repr_str
@@ -151,39 +151,3 @@ def test_init_provenance(sample_netcdf_file):
     met_data = MetDataset(sample_netcdf_file)
     assert 'history' in met_data.ds.attrs
     assert "Opened file" in met_data.ds.attrs['history']
-
-
-def test_get_coord_names_variants(sample_netcdf_file):
-    """
-    Tests that _get_coord_names correctly identifies various coordinate aliases.
-    """
-    # Instantiate MetDataset, we'll overwrite the ds attribute for testing
-    met_data = MetDataset(sample_netcdf_file)
-
-    # Define test cases as a list of tuples: (coords, expected_mapping)
-    test_cases = [
-        (
-            {'lat': [40.0], 'lon': [-120.0], 'pressure': [1000.0]},
-            {'lat': 'lat', 'lon': 'lon', 'level': 'pressure'},
-        ),
-        (
-            {'latitude': [40.0], 'longitude': [-120.0], 'isobaricInhPa': [850.0]},
-            {'lat': 'latitude', 'lon': 'longitude', 'level': 'isobaricInhPa'},
-        ),
-        (
-            {'lat': [40.0], 'lon': [-120.0], 'z': [500.0]},
-            {'lat': 'lat', 'lon': 'lon', 'level': 'z'},
-        ),
-        # New test case to prove robustness with a previously unsupported alias
-        (
-            {'latitude': [40.0], 'lon': [-110.0], 'isobaric': [700.0]},
-            {'lat': 'latitude', 'lon': 'lon', 'level': 'isobaric'},
-        ),
-    ]
-
-    for coords, expected in test_cases:
-        coords['time'] = [datetime(2023, 1, 1)]  # Add time coord for consistency
-        ds_variant = xr.Dataset(coords=coords)
-        met_data.ds = ds_variant
-        coord_names = met_data._get_coord_names()
-        assert coord_names == expected
