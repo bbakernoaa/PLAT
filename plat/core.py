@@ -275,7 +275,20 @@ def _rk4_step_jit(
     -------
     Tuple[float, float, float]
         A tuple containing the new latitude, longitude, and vertical level.
+        Returns (NaN, NaN, NaN) if the particle is out of bounds.
     """
+    # --- Boundary Check ---
+    # To handle descending level coordinates (e.g., pressure), check min/max.
+    min_level = min(grid_level[0], grid_level[-1])
+    max_level = max(grid_level[0], grid_level[-1])
+    if not (
+        grid_lat[0] <= lat <= grid_lat[-1]
+        and grid_lon[0] <= lon <= grid_lon[-1]
+        and min_level <= level <= max_level
+        and grid_time[0] <= time <= grid_time[-1]
+    ):
+        return np.nan, np.nan, np.nan
+
     dt_hours = dt_seconds / 3600.0
     # --- RK4 k1 ---
     u1 = _quadrilinear_interpolation_jit(lat, lon, level, time, grid_lat, grid_lon, grid_level, grid_time, u_data)
@@ -383,6 +396,15 @@ def _integrate_jit(
     num_particles = trajectory_lat.shape[0]
     for p in numba.prange(num_particles):  # Parallel loop over particles
         for i in range(num_steps):
+            # If the current position is NaN, the particle has exited the
+            # domain. Propagate NaN for the rest of its trajectory.
+            if np.isnan(trajectory_lat[p, i]):
+                trajectory_lat[p, i + 1] = np.nan
+                trajectory_lon[p, i + 1] = np.nan
+                trajectory_level[p, i + 1] = np.nan
+                trajectory_time[p, i + 1] = trajectory_time[p, i] + dt_seconds
+                continue
+
             new_lat, new_lon, new_level = _rk4_step_jit(
                 trajectory_lat[p, i],
                 trajectory_lon[p, i],
