@@ -144,6 +144,7 @@ def test_metdataset_repr(sample_netcdf_file):
     # Check for normalized data variable names
     assert "Data Variables: ['u', 'v', 't']" in repr_str
 
+
 def test_init_provenance(sample_netcdf_file):
     """
     Tests that the __init__ method adds a history attribute for provenance.
@@ -151,3 +152,27 @@ def test_init_provenance(sample_netcdf_file):
     met_data = MetDataset(sample_netcdf_file)
     assert 'history' in met_data.ds.attrs
     assert "Opened file" in met_data.ds.attrs['history']
+
+
+def test_normalize_names_handles_multiple_aliases(tmpdir_factory):
+    """
+    Tests that the data-driven normalization handles different aliases.
+    """
+    tmpdir = tmpdir_factory.mktemp("data")
+    file_path = os.path.join(str(tmpdir), "test_alias_data.nc")
+
+    # Create a dataset with a different alias for the 'u' variable
+    ds = xr.Dataset(
+        {'u_wind': (('time', 'lat', 'lon'), np.random.rand(1, 1, 1))},
+        coords={
+            'time': [datetime(2023, 1, 1)],
+            'lat': [40.0],
+            'lon': [-120.0],
+        },
+    )
+    ds.to_netcdf(file_path)
+
+    # Initialize MetDataset and check for the standard name 'u'
+    met_data = MetDataset(file_path)
+    assert 'u' in met_data.ds
+    assert 'u_wind' not in met_data.ds
