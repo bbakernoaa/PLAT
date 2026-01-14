@@ -75,7 +75,7 @@ class MetDataset:
             self.ds: xr.Dataset = xr.open_dataset(
                 file_path, engine='cfgrib', chunks=chunks
             )
-        except ValueError:
+        except (ValueError, EOFError):
             # Fallback for non-GRIB formats like NetCDF
             self.ds = xr.open_dataset(file_path, chunks=chunks)
 
@@ -84,13 +84,6 @@ class MetDataset:
         self.ds.attrs['history'] = f"[{timestamp}] Opened file: {file_path}"
 
         self._normalize_names()
-
-    def __repr__(self) -> str:
-        """Provide a developer-friendly string representation."""
-        header = f"MetDataset(file_path='{self.file_path}')"
-        coords = f"Coordinates: {list(self.ds.coords.keys())}"
-        variables = f"Data Variables: {list(self.ds.data_vars.keys())}"
-        return f"{header}\n  {coords}\n  {variables}"
 
     def _normalize_names(self) -> None:
         """
@@ -123,6 +116,14 @@ class MetDataset:
         # --- Combine and apply the renaming ---
         rename_map = {**var_rename_map, **coord_rename_map}
         self.ds = self.ds.rename(rename_map)
+
+    def __repr__(self) -> str:
+        """Provide a developer-friendly string representation."""
+        header = f"MetDataset(file_path='{self.file_path}')"
+        coords = f"Coordinates: {list(self.ds.coords.keys())}"
+        variables = f"Data Variables: {list(self.ds.data_vars.keys())}"
+        return f"{header}\n  {coords}\n  {variables}"
+
 
     def subset(
         self,
