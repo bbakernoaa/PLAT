@@ -75,7 +75,7 @@ class MetDataset:
             self.ds: xr.Dataset = xr.open_dataset(
                 file_path, engine='cfgrib', chunks=chunks
             )
-        except ValueError:
+        except (ValueError, EOFError):
             # Fallback for non-GRIB formats like NetCDF
             self.ds = xr.open_dataset(file_path, chunks=chunks)
 
@@ -85,6 +85,38 @@ class MetDataset:
 
         self._normalize_names()
 
+    def _normalize_names(self) -> None:
+        """
+        Normalize meteorological variable and coordinate names to PLAT standards.
+
+        This private method uses a data-driven approach based on the class-level
+        `VARIABLE_MAP` and `COORD_MAP` to find known aliases for standard names
+        and renames them in the xarray Dataset. This ensures consistent data
+        access regardless of the source model's naming conventions.
+        """
+        # --- Create a combined set of all variable/coordinate names ---
+        all_ds_vars = set(self.ds.variables)
+
+        # --- Build a renaming map from all known aliases ---
+        # This is more scalable than loops, as adding a new alias only
+        # requires updating the class-level dictionaries.
+        var_rename_map = {
+            alias: std_name
+            for std_name, aliases in self.VARIABLE_MAP.items()
+            for alias in aliases
+            if alias in all_ds_vars
+        }
+        coord_rename_map = {
+            alias: std_name
+            for std_name, aliases in self.COORD_MAP.items()
+            for alias in aliases
+            if alias in all_ds_vars
+        }
+
+        # --- Combine and apply the renaming ---
+        rename_map = {**var_rename_map, **coord_rename_map}
+        self.ds = self.ds.rename(rename_map)
+
     def __repr__(self) -> str:
         """Provide a developer-friendly string representation."""
         header = f"MetDataset(file_path='{self.file_path}')"
@@ -92,33 +124,6 @@ class MetDataset:
         variables = f"Data Variables: {list(self.ds.data_vars.keys())}"
         return f"{header}\n  {coords}\n  {variables}"
 
-    def _normalize_names(self) -> None:
-        """
-        Normalize meteorological variable and coordinate names to PLAT standards.
-
-        This private method iterates through the `VARIABLE_MAP` and `COORD_MAP`
-        to find known aliases for standard names and renames them in the xarray
-        Dataset. This ensures consistent data access regardless of the source
-        model's naming conventions.
-        """
-        # --- Normalize Data Variables ---
-        var_rename_dict: Dict[str, str] = {}
-        for std_name, aliases in self.VARIABLE_MAP.items():
-            for alias in aliases:
-                if alias in self.ds.variables:
-                    var_rename_dict[alias] = std_name
-                    break
-        self.ds = self.ds.rename(var_rename_dict)
-
-        # --- Normalize Coordinate Variables ---
-        coord_rename_dict: Dict[str, str] = {}
-        for std_name, aliases in self.COORD_MAP.items():
-            for alias in aliases:
-                # Check in both coords and data_vars for dimension coordinates
-                if alias in self.ds.coords or alias in self.ds.data_vars:
-                    coord_rename_dict[alias] = std_name
-                    break
-        self.ds = self.ds.rename(coord_rename_dict)
 
     def subset(
         self,
