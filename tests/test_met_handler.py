@@ -43,20 +43,27 @@ def sample_netcdf_file(tmpdir_factory):
 
 def test_metdataset_init_and_normalize(sample_netcdf_file):
     """
-    Tests that MetDataset initializes correctly and normalizes variable names.
+    Tests that MetDataset initializes correctly and normalizes variable and coordinate names.
     """
     met_data = MetDataset(sample_netcdf_file)
     assert isinstance(met_data.ds, xr.Dataset)
 
-    # Check for standardized variable names
-    assert 'u' in met_data.ds
-    assert 'v' in met_data.ds
-    assert 't' in met_data.ds
+    # --- Assertions for standardized names ---
+    expected_coords = {'time', 'lat', 'lon'}
+    expected_vars = {'u', 'v', 't'}
+
+    # Check that coordinate names have been standardized
+    assert set(met_data.ds.coords.keys()) == expected_coords
+
+    # Check that data variable names have been standardized
+    assert set(met_data.ds.data_vars.keys()) == expected_vars
 
     # Ensure original aliased names are gone
     assert 'UGRD' not in met_data.ds
     assert 'VGRD' not in met_data.ds
     assert 'TMP' not in met_data.ds
+    assert 'latitude' not in met_data.ds.coords
+    assert 'longitude' not in met_data.ds.coords
 
 
 def test_metdataset_subset(sample_netcdf_file):

@@ -97,24 +97,18 @@ class MetDataset:
         # --- Create a combined set of all variable/coordinate names ---
         all_ds_vars = set(self.ds.variables)
 
-        # --- Build a renaming map from all known aliases ---
-        # This is more scalable than loops, as adding a new alias only
-        # requires updating the class-level dictionaries.
-        var_rename_map = {
+        # --- Combine all known alias maps for efficient lookup ---
+        combined_map = {**self.VARIABLE_MAP, **self.COORD_MAP}
+
+        # --- Build a single renaming map from all known aliases ---
+        rename_map = {
             alias: std_name
-            for std_name, aliases in self.VARIABLE_MAP.items()
-            for alias in aliases
-            if alias in all_ds_vars
-        }
-        coord_rename_map = {
-            alias: std_name
-            for std_name, aliases in self.COORD_MAP.items()
+            for std_name, aliases in combined_map.items()
             for alias in aliases
             if alias in all_ds_vars
         }
 
-        # --- Combine and apply the renaming ---
-        rename_map = {**var_rename_map, **coord_rename_map}
+        # --- Apply the renaming ---
         self.ds = self.ds.rename(rename_map)
 
     def __repr__(self) -> str:
