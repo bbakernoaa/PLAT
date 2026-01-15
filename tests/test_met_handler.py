@@ -176,3 +176,40 @@ def test_normalize_names_handles_multiple_aliases(tmpdir_factory):
     met_data = MetDataset(file_path)
     assert 'u' in met_data.ds
     assert 'u_wind' not in met_data.ds
+
+
+def test_normalize_names_handles_conflicting_coordinate_aliases(tmpdir_factory):
+    """
+    Tests that normalization succeeds if conflicting coord aliases are present.
+
+    If both 'latitude' and 'lat' are in the source file, the normalizer
+    should gracefully handle it by choosing one to rename to the standard 'lat'
+    without raising an error.
+    """
+    tmpdir = tmpdir_factory.mktemp("data")
+    file_path = os.path.join(str(tmpdir), "test_conflicting_alias_data.nc")
+
+    # Create a dataset with conflicting coordinate aliases.
+    # Here, 'latitude' is a dimension/coordinate, and 'lat' is a non-dimension
+    # coordinate. Both map to the standard name 'lat'.
+    ds = xr.Dataset(
+        {'UGRD': (('latitude',), [10, 20])},
+        coords={
+            'latitude': [40.0, 50.0],
+            'lat': ('latitude', [40.0, 50.0]) # Conflicting coord alias
+        },
+    )
+    ds.to_netcdf(file_path)
+
+    # This initialization is expected to fail with the old logic but
+    # should succeed with the robust logic.
+    met_data = MetDataset(file_path)
+
+    # Check that the standard coordinate 'lat' exists.
+    assert 'lat' in met_data.ds.coords
+    # Check that the original alias 'latitude' has been removed.
+    assert 'latitude' not in met_data.ds.coords
+    # Check that the variable 'u' (renamed from UGRD) exists.
+    assert 'u' in met_data.ds
+    # Check that the variable 'u' now uses the standard coordinate.
+    assert 'lat' in met_data.ds['u'].coords

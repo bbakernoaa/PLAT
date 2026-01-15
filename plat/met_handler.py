@@ -90,32 +90,66 @@ class MetDataset:
         Normalize meteorological variable and coordinate names to PLAT standards.
 
         This private method uses a data-driven approach based on the class-level
-        `VARIABLE_MAP` and `COORD_MAP` to find known aliases for standard names
-        and renames them in the xarray Dataset. This ensures consistent data
-        access regardless of the source model's naming conventions.
+        `VARIABLE_MAP` and `COORD_MAP`. It intelligently handles cases where
+        multiple conflicting aliases for the same standard name exist (e.g., both
+        `latitude` and `lat`). The logic prioritizes keeping the alias that is
+        a dimension, drops the others, and then renames the canonical alias to
+        the standard name.
         """
-        # --- Create a combined set of all variable/coordinate names ---
         all_ds_vars = set(self.ds.variables)
+        ds_dims = set(self.ds.dims)
+        rename_map: Dict[str, str] = {}
+        vars_to_drop: list[str] = []
 
-        # --- Build a renaming map from all known aliases ---
-        # This is more scalable than loops, as adding a new alias only
-        # requires updating the class-level dictionaries.
-        var_rename_map = {
-            alias: std_name
-            for std_name, aliases in self.VARIABLE_MAP.items()
-            for alias in aliases
-            if alias in all_ds_vars
-        }
-        coord_rename_map = {
-            alias: std_name
-            for std_name, aliases in self.COORD_MAP.items()
-            for alias in aliases
-            if alias in all_ds_vars
-        }
+        combined_map = {**self.VARIABLE_MAP, **self.COORD_MAP}
 
-        # --- Combine and apply the renaming ---
-        rename_map = {**var_rename_map, **coord_rename_map}
-        self.ds = self.ds.rename(rename_map)
+        for std_name, aliases in combined_map.items():
+            found_aliases = [
+                alias for alias in aliases if alias in all_ds_vars
+            ]
+
+            if not found_aliases:
+                continue
+
+            # Choose the canonical variable to keep.
+            # Preference is given to aliases that are also dimension coordinates.
+            canonical_alias = found_aliases[0]  # Default to the first one found
+            is_dim = canonical_alias in ds_dims
+
+            for alias in found_aliases[1:]:
+                alias_is_dim = alias in ds_dims
+                if alias_is_dim and not is_dim:
+                    # This alias is a dimension, the current canonical is not.
+                    # Promote this alias to canonical.
+                    canonical_alias = alias
+                    is_dim = True
+                elif alias_is_dim == is_dim:
+                    # If both are dims or both are not, prefer the one that
+                    # matches the standard name.
+                    if alias == std_name:
+                        canonical_alias = alias
+
+            # Rename the canonical variable if its name is not the standard.
+            if canonical_alias != std_name:
+                rename_map[canonical_alias] = std_name
+
+            # Drop all other found aliases for this standard name.
+            for alias in found_aliases:
+                if alias != canonical_alias:
+                    vars_to_drop.append(alias)
+
+        # The operations must be ordered: drop conflicting variables first, then rename.
+        if vars_to_drop:
+            # Ensure we don't drop a variable that is also slated for renaming.
+            # This can happen if the canonical alias is not the standard name.
+            final_drop_list = [
+                v for v in vars_to_drop if v not in rename_map
+            ]
+            if final_drop_list:
+                self.ds = self.ds.drop_vars(final_drop_list, errors="ignore")
+
+        if rename_map:
+            self.ds = self.ds.rename(rename_map)
 
     def __repr__(self) -> str:
         """Provide a developer-friendly string representation."""
