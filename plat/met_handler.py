@@ -87,35 +87,79 @@ class MetDataset:
 
     def _normalize_names(self) -> None:
         """
-        Normalize meteorological variable and coordinate names to PLAT standards.
+        Normalize coordinate and variable names to PLAT standards defensively.
 
-        This private method uses a data-driven approach based on the class-level
-        `VARIABLE_MAP` and `COORD_MAP` to find known aliases for standard names
-        and renames them in the xarray Dataset. This ensures consistent data
-        access regardless of the source model's naming conventions.
+        This method handles cases where multiple aliases for the same standard
+        name exist in the dataset (e.g., both 'lat' and 'latitude' are present).
+        It identifies the canonical coordinate (the one that is a dimension),
+        drops any conflicting data variables that use other aliases, and then
+        renames the canonical coordinate to the standard PLAT name. This
+        prevents `xarray.rename()` from failing when the target name for a
+        rename already exists as a conflicting (and unnecessary) variable.
         """
-        # --- Create a combined set of all variable/coordinate names ---
-        all_ds_vars = set(self.ds.variables)
+        # --- 1. Normalize Coordinates Defensively ---
+        coord_rename_map = {}
+        vars_to_drop = []
 
-        # --- Build a renaming map from all known aliases ---
-        # This is more scalable than loops, as adding a new alias only
-        # requires updating the class-level dictionaries.
+        # Find the canonical dimension for each standard coordinate
+        for std_name, aliases in self.COORD_MAP.items():
+            present_aliases = [
+                alias for alias in aliases if alias in self.ds.variables
+            ]
+            if not present_aliases:
+                continue
+
+            canonical_coord = None
+            # The canonical coordinate is the one that is also a dimension
+            for alias in present_aliases:
+                if alias in self.ds.dims:
+                    canonical_coord = alias
+                    break
+
+            # If no alias is a dimension, use the first one found.
+            if not canonical_coord:
+                canonical_coord = present_aliases[0]
+
+            # Any other present alias is a conflict and must be dropped.
+            for alias in present_aliases:
+                if alias != canonical_coord:
+                    vars_to_drop.append(alias)
+
+            # If the canonical name isn't the standard name, prepare to rename it.
+            if canonical_coord != std_name:
+                coord_rename_map[canonical_coord] = std_name
+
+        # Drop conflicting variables BEFORE renaming to avoid errors.
+        if vars_to_drop:
+            self.ds = self.ds.drop_vars(vars_to_drop, errors='ignore')
+
+        # Rename canonical coordinates to their standard names.
+        if coord_rename_map:
+            self.ds = self.ds.rename(coord_rename_map)
+
+        # --- 2. Normalize Data Variables ---
+        all_ds_vars = set(self.ds.variables)
         var_rename_map = {
             alias: std_name
             for std_name, aliases in self.VARIABLE_MAP.items()
             for alias in aliases
-            if alias in all_ds_vars
+            if alias in all_ds_vars and std_name not in all_ds_vars
         }
-        coord_rename_map = {
-            alias: std_name
-            for std_name, aliases in self.COORD_MAP.items()
-            for alias in aliases
-            if alias in all_ds_vars
-        }
+        if var_rename_map:
+            self.ds = self.ds.rename(var_rename_map)
 
-        # --- Combine and apply the renaming ---
-        rename_map = {**var_rename_map, **coord_rename_map}
-        self.ds = self.ds.rename(rename_map)
+        # --- 3. Scientific Hygiene: Update History ---
+        if vars_to_drop or coord_rename_map or var_rename_map:
+            timestamp: str = datetime.now(timezone.utc).isoformat()
+            history_log = (
+                f"[{timestamp}] Normalized variable and coordinate names."
+            )
+
+            existing_history: Optional[str] = self.ds.attrs.get('history')
+            if existing_history:
+                self.ds.attrs['history'] = f"{existing_history}\n{history_log}"
+            else:
+                self.ds.attrs['history'] = history_log
 
     def __repr__(self) -> str:
         """Provide a developer-friendly string representation."""
