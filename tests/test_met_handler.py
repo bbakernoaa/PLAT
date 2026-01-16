@@ -176,3 +176,52 @@ def test_normalize_names_handles_multiple_aliases(tmpdir_factory):
     met_data = MetDataset(file_path)
     assert 'u' in met_data.ds
     assert 'u_wind' not in met_data.ds
+
+def test_normalize_names_handles_conflicting_aliases(tmpdir_factory):
+    """
+    Tests that normalization correctly handles a conflicting data variable.
+
+    This test creates a NetCDF file where 'latitude' is a dimension/coordinate,
+    but a data variable named 'lat' also exists. The robust normalization
+    should identify 'latitude' as the canonical coordinate, drop the conflicting
+    'lat' data variable, and rename 'latitude' to 'lat'.
+    """
+    tmpdir = tmpdir_factory.mktemp("data_conflict")
+    file_path = os.path.join(str(tmpdir), "test_conflict_data.nc")
+
+    # Define coordinates with the name 'latitude'
+    time = [datetime(2023, 1, 1)]
+    latitude = np.arange(30, 51, 10)
+    longitude = np.arange(-125, -104, 10)
+
+    # Create a dataset where 'latitude' is a coordinate, but a data variable
+    # named 'lat' also exists, creating a name collision upon renaming.
+    ds = xr.Dataset(
+        {
+            'UGRD': (('time', 'latitude', 'longitude'), np.random.rand(1, 3, 3)),
+            # This is the conflicting data variable
+            'lat': (('time', 'longitude'), np.random.rand(1, 3)),
+        },
+        coords={'time': time, 'latitude': latitude, 'longitude': longitude},
+    )
+
+    ds.to_netcdf(file_path)
+
+    # --- Act ---
+    # Initialize MetDataset, which triggers normalization
+    met_data = MetDataset(file_path)
+
+    # --- Assert ---
+    # 1. The standard name 'lat' should exist as a coordinate.
+    assert 'lat' in met_data.ds.coords
+    # 2. 'lat' should also be a dimension.
+    assert 'lat' in met_data.ds.dims
+    # 3. The original alias 'latitude' should be gone.
+    assert 'latitude' not in met_data.ds.variables
+    # 4. The conflicting 'lat' data variable should have been dropped,
+    #    so 'lat' should not be a data variable.
+    assert 'lat' not in met_data.ds.data_vars
+
+    # 5. Check that other variables were normalized correctly.
+    assert 'u' in met_data.ds.data_vars
+    assert 'UGRD' not in met_data.ds.data_vars
