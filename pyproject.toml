@@ -11,8 +11,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+plotting = [
+    "matplotlib",
+    "cartopy",
+]
 test = [
     "pytest",
+    "plat[plotting]",
 ]
 dev = [
     "ruff",
