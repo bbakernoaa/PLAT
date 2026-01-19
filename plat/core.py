@@ -612,50 +612,9 @@ def run_trajectory(
         positional data.
     Examples
     --------
-    >>> import numpy as np
-    >>> import pandas as pd
-    >>> import xarray as xr
-    >>> # Create a sample velocity field (e.g., solid body rotation)
-    >>> lat_grid = np.arange(-90, 91, 10)
-    >>> lon_grid = np.arange(-180, 181, 20)
-    >>> level_grid = np.arange(1000, 900, -50)
-    >>> time_grid = pd.to_datetime(['2023-01-01T00:00', '2023-01-01T06:00'])
-    >>> lon_rad, lat_rad = np.meshgrid(np.deg2rad(lon_grid), np.deg2rad(lat_grid))
-    >>> u = -np.sin(lat_rad) * np.cos(lon_rad) * 10
-    >>> v = np.sin(lon_rad) * 10
-    >>> w = np.zeros_like(u)
-    >>> # Create a 4D velocity field
-    >>> u_4d = np.tile(u[np.newaxis, np.newaxis, :, :], (len(time_grid), len(level_grid), 1, 1))
-    >>> v_4d = np.tile(v[np.newaxis, np.newaxis, :, :], (len(time_grid), len(level_grid), 1, 1))
-    >>> w_4d = np.tile(w[np.newaxis, np.newaxis, :, :], (len(time_grid), len(level_grid), 1, 1))
-    >>> velocity_field = xr.Dataset(
-    ...     {
-    ...         'u': (('time', 'level', 'lat', 'lon'), u_4d),
-    ...         'v': (('time', 'level', 'lat', 'lon'), v_4d),
-    ...         'w': (('time', 'level', 'lat', 'lon'), w_4d),
-    ...     },
-    ...     coords={'time': time_grid, 'lat': lat_grid, 'lon': lon_grid, 'level': level_grid}
-    ... )
-    >>> # Define starting points for multiple particles
-    >>> start_points = {
-    ...     'lat': [40.0, 45.0],
-    ...     'lon': [-120.0, -115.0],
-    ...     'level': [950, 950],
-    ...     'time': pd.Timestamp('2023-01-01T01:00')
-    ... }
-    >>> trajectory_ds = run_trajectory(start_points, velocity_field, 10)
-    >>> print(trajectory_ds)
-    <xarray.Dataset>
-    Dimensions:   (particle: 2, time: 11)
-    Coordinates:
-      * particle  (particle) int64 0 1
-      * time      (time) datetime64[ns] 2023-01-01T01:00:00 ... 2023-01-01T11:00:00
-    Data variables:
-        lat       (particle, time) float64 40.0 39.86 39.73 ... 43.51 43.4
-        lon       (particle, time) float64 -120.0 -119.5 -119.0 ... -111.3 -110.8
-        level     (particle, time) float64 950.0 950.0 950.0 ... 950.0 950.0
-    Attributes:
-        history:  4D particle trajectory calculated for 2 particles using RK4 integ...
+    For a complete, runnable example of how to create a velocity field,
+    run the trajectory model, and visualize the output, please see the
+    script in ``examples/run_basic_trajectory.py``.
     """
     # --- 1. Prepare data for Numba kernel ---
     (
